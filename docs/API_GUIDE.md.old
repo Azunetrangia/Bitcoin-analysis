@@ -1,0 +1,179 @@
+# FastAPI Server - Bitcoin Market Intelligence API
+
+## Quick Start
+
+### Run the API Server
+
+```bash
+# From project root
+python -m src.api.main
+
+# Or using uvicorn directly
+uvicorn src.api.main:app --reload --port 8000
+```
+
+The API will be available at:
+- **Base URL**: http://localhost:8000
+- **Interactive Docs**: http://localhost:8000/docs
+- **OpenAPI Schema**: http://localhost:8000/openapi.json
+
+## API Endpoints
+
+### Health & Info
+- `GET /` - API information
+- `GET /health` - Health check
+
+### Market Data (`/api/v1/market-data`)
+- `GET /` - Query historical OHLCV data
+- `GET /latest` - Get latest candle
+- `POST /download` - Download historical data from Binance
+- `POST /update` - Update with latest candles
+
+### Analysis (`/api/v1/analysis`)
+
+**Technical Indicators:**
+- `GET /indicators` - Calculate technical indicators
+- `GET /features` - Extract regime classification features
+
+**Regime Classification:**
+- `GET /regimes` - Classify market regimes using HMM
+- `POST /train-regime` - Train regime classifier model
+
+**Risk Metrics:**
+- `GET /risk-metrics` - Calculate comprehensive risk metrics
+- `GET /drawdown` - Calculate drawdown metrics
+- `GET /volatility` - Calculate volatility metrics
+- `GET /sharpe` - Calculate Sharpe ratio
+- `GET /var` - Calculate Value at Risk (VaR)
+
+### Scheduler (`/api/v1/scheduler`)
+
+**Scheduler Management:**
+- `GET /status` - Get scheduler and job status
+- `POST /start` - Start scheduler
+- `POST /stop` - Stop scheduler
+- `POST /trigger/{job_id}` - Manually trigger a job
+
+**Pipeline Execution:**
+- `POST /pipeline/update` - Run incremental update pipeline
+- `POST /pipeline/backfill` - Run historical backfill pipeline
+- `POST /pipeline/retrain` - Run model retraining pipeline
+- `POST /pipeline/full-update` - Run complete update pipeline
+
+## Example API Calls
+
+### Get Latest Bitcoin Price
+
+```bash
+curl "http://localhost:8000/api/v1/market-data/latest?symbol=BTCUSDT&interval=1h"
+```
+
+### Download Historical Data
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/market-data/download" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "BTCUSDT",
+    "start": "2024-01-01T00:00:00",
+    "end": "2024-01-02T00:00:00",
+    "interval": "1h"
+  }'
+```
+
+### Get Technical Indicators
+
+```bash
+curl "http://localhost:8000/api/v1/analysis/indicators?symbol=BTCUSDT&start=2024-01-01&end=2024-01-02&interval=1h"
+```
+
+### Classify Market Regimes
+
+```bash
+curl "http://localhost:8000/api/v1/analysis/regimes?symbol=BTCUSDT&interval=1h"
+```
+
+### Get Risk Metrics
+
+```bash
+curl "http://localhost:8000/api/v1/analysis/risk-metrics?symbol=BTCUSDT&interval=1h&window=30&risk_free_rate=0.02&confidence_level=0.95"
+```
+
+### Start Scheduler
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/scheduler/start"
+```
+
+### Get Scheduler Status
+
+```bash
+curl "http://localhost:8000/api/v1/scheduler/status"
+```
+
+### Run Incremental Update Pipeline
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/scheduler/pipeline/update?symbol=BTCUSDT&interval=1h&limit=2"
+```
+
+## Development
+
+### Run Tests
+
+```bash
+# All tests
+pytest tests/unit/
+
+# API tests only
+pytest tests/unit/test_api_smoke.py -v
+
+# With coverage
+pytest tests/unit/ --cov=src --cov-report=html
+```
+
+### Configuration
+
+The API uses dependency injection with a singleton `ServiceContainer` that initializes:
+- Binance data client
+- Parquet storage manager
+- DuckDB query engine
+- Domain services (Technical Analysis, Regime Classifier, Risk Calculator)
+- Application services (Market Data, Analysis, Scheduler, Orchestrator)
+
+All services are automatically configured from `Settings` class.
+
+## Architecture
+
+```
+src/api/
+├── main.py              # FastAPI application entry point
+├── dependencies.py      # Dependency injection container
+├── models.py           # Pydantic request/response models
+└── routes/
+    ├── market_data.py  # Market data endpoints
+    ├── analysis.py     # Analysis endpoints
+    └── scheduler.py    # Scheduler endpoints
+```
+
+## Response Models
+
+All endpoints return Pydantic-validated JSON responses:
+- Type safety and validation
+- Automatic OpenAPI documentation
+- Consistent error handling
+
+## Error Handling
+
+The API has custom exception handlers for:
+- `HTTPException` - HTTP-specific errors (404, 400, etc.)
+- `DataNotFoundError` - Data not found in storage
+- `AnalysisException` - Analysis/calculation errors
+- General exceptions - Caught and returned as 500 errors
+
+All errors return JSON in the format:
+```json
+{
+  "detail": "Error message"
+}
+```

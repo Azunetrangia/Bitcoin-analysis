@@ -1,0 +1,13 @@
+[Unit]
+Description=Bitcoin Data Auto-Update Timer
+Documentation=file:///home/azune/Documents/coding/Data-analysis-bitcoin/docs/AUTO_UPDATE.md
+Requires=bitcoin-update.service
+
+[Timer]
+# Run daily at 2:00 AM
+OnCalendar=daily
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

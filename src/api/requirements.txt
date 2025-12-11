@@ -1,0 +1,23 @@
+# Bitcoin Market Intelligence API Requirements
+# Install: pip install -r requirements.txt
+
+# Core API Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.10.0
+pydantic-settings==2.6.0
+websockets==12.0  # WebSocket support
+
+# Database
+psycopg2-binary==2.9.10
+
+# Environment
+python-dotenv==1.0.1
+
+# Data processing (already have from Phase 1)
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Async HTTP client (already have)
+aiohttp>=3.9.0

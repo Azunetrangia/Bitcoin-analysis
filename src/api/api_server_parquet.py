@@ -1,0 +1,594 @@
+"""
+Simple API Server using Parquet files (no database required)
+"""
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
+from datetime import datetime
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI(
+    title="Bitcoin Market Intelligence API (Parquet)",
+    description="API using Parquet files - No database required",
+    version="1.0.0"
+)
+
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Data directory
+DATA_DIR = Path(__file__).parent.parent.parent / "data" / "hot"
+
+# Cache for loaded data
+_data_cache = {}
+
+
+def load_parquet_data(symbol: str = "BTCUSDT", interval: str = "1h"):
+    """Load data from Parquet file"""
+    cache_key = f"{symbol}_{interval}"
+    
+    if cache_key in _data_cache:
+        return _data_cache[cache_key]
+    
+    file_path = DATA_DIR / f"{symbol}_{interval}.parquet"
+    
+    if not file_path.exists():
+        logger.warning(f"File not found: {file_path}")
+        return None
+    
+    try:
+        df = pd.read_parquet(file_path)
+        # Use 'time' column if exists, else 'timestamp'
+        time_col = 'time' if 'time' in df.columns else 'timestamp'
+        df['timestamp'] = pd.to_datetime(df[time_col])
+        _data_cache[cache_key] = df
+        logger.info(f"Loaded {len(df)} rows from {file_path}")
+        return df
+    except Exception as e:
+        logger.error(f"Error loading {file_path}: {e}")
+        return None
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Bitcoin Market Intelligence API (Parquet)",
+        "status": "running",
+        "docs": "/docs"
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "database": "parquet-files",
+        "timestamp": datetime.now()
+    }
+
+
+@app.get("/api/v1/candles/{symbol}")
+async def get_candles(
+    symbol: str,
+    interval: str = Query("1h"),
+    limit: int = Query(100, ge=1, le=1000),
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None
+):
+    """Get candlestick data from Parquet"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail=f"No data found for {symbol} {interval}")
+    
+    # Filter by time range
+    if start_time:
+        df = df[df['timestamp'] >= start_time]
+    if end_time:
+        df = df[df['timestamp'] <= end_time]
+    
+    # Limit results
+    df = df.tail(limit)
+    
+    # Convert to JSON
+    result = []
+    for _, row in df.iterrows():
+        result.append({
+            "time": row['timestamp'].isoformat(),
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close']),
+            "volume": float(row['volume']),
+            "quote_volume": float(row.get('quote_volume', row['volume'] * row['close'])),
+            "trades": int(row.get('trades', 0))
+        })
+    
+    return result
+
+
+@app.get("/api/v1/market-data/")
+async def get_market_data(
+    symbol: str = Query("BTCUSDT"),
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    interval: str = Query("1h"),
+    limit: int = Query(500)
+):
+    """Get market data for calculations"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        # Try other intervals
+        for alt_interval in ["1h", "4h", "1d"]:
+            df = load_parquet_data(symbol.upper(), alt_interval)
+            if df is not None and not df.empty:
+                interval = alt_interval
+                break
+    
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No data available")
+    
+    # Filter by time
+    if start:
+        df = df[df['timestamp'] >= start]
+    if end:
+        df = df[df['timestamp'] <= end]
+    
+    df = df.tail(limit)
+    
+    result = []
+    for _, row in df.iterrows():
+        result.append({
+            "timestamp": row['timestamp'].isoformat(),
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close']),
+            "volume": float(row['volume'])
+        })
+    
+    return {"data": result, "count": len(result)}
+
+
+@app.get("/api/v1/analysis/regimes")
+async def get_regimes(
+    symbol: str = Query("BTCUSDT"),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    interval: str = Query("1h")
+):
+    """Calculate regime classification"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        # Try other intervals
+        for alt_interval in ["1h", "4h", "1d"]:
+            df = load_parquet_data(symbol.upper(), alt_interval)
+            if df is not None and not df.empty:
+                break
+    
+    if df is None or df.empty or len(df) < 30:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Insufficient data. Need 30+ points, found {len(df) if df is not None else 0}"
+        )
+    
+    # Convert timezone-aware datetimes to naive
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+    
+    # Filter by date range
+    df = df[(df['timestamp'] >= start_naive) & (df['timestamp'] <= end_naive)]
+    
+    if len(df) < 30:
+        raise HTTPException(status_code=400, detail=f"Need at least 30 candles in range, found {len(df)}")
+    
+    # Calculate indicators
+    df['returns'] = df['close'].pct_change()
+    df['volatility'] = df['returns'].rolling(20).std()
+    df['sma_20'] = df['close'].rolling(20).mean()
+    df['sma_50'] = df['close'].rolling(50).mean()
+    
+    # Classify regimes using trend + volatility
+    regimes = []
+    regime_names = {0: "High Volatility", 1: "Bearish", 2: "Sideways", 3: "Bullish"}
+    regime_colors = {0: "#f59e0b", 1: "#ef4444", 2: "#6b7280", 3: "#22c55e"}
+    
+    for idx, row in df.iterrows():
+        if pd.isna(row['volatility']) or pd.isna(row['sma_20']):
+            regime = 2
+        else:
+            vol_threshold = df['volatility'].quantile(0.75)
+            
+            # High volatility regime
+            if row['volatility'] > vol_threshold:
+                regime = 0
+            # Bullish: price above SMA20 and positive returns
+            elif row['close'] > row['sma_20'] and row['returns'] > 0:
+                regime = 3
+            # Bearish: price below SMA20 and negative returns
+            elif row['close'] < row['sma_20'] and row['returns'] < 0:
+                regime = 1
+            # Sideways: everything else
+            else:
+                regime = 2
+        
+        regimes.append({
+            'timestamp': row['timestamp'].isoformat(),
+            'regime': regime,
+            'regime_name': regime_names[regime],
+            'regime_color': regime_colors[regime],
+            'close': float(row['close']),
+            'volatility': float(row['volatility']) if not pd.isna(row['volatility']) else None
+        })
+    
+    # Calculate distribution
+    regime_counts = pd.Series([r['regime'] for r in regimes]).value_counts()
+    total = len(regimes)
+    distribution = {
+        regime_names[k]: {
+            'count': int(v),
+            'percentage': float(v / total * 100),
+            'color': regime_colors[k]
+        } for k, v in regime_counts.items()
+    }
+    
+    # Current regime
+    current = regimes[-1] if regimes else None
+    
+    return {
+        'regimes': regimes,
+        'stats': {
+            'total_periods': len(regimes),
+            'distribution': distribution,
+            'current_regime': current['regime_name'] if current else 'Unknown',
+            'current_regime_color': current['regime_color'] if current else '#6b7280'
+        }
+    }
+
+
+@app.get("/api/v1/summary/{symbol}")
+async def get_summary(symbol: str, interval: str = Query("1h")):
+    """Get market summary with latest metrics"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        for alt_interval in ["1h", "4h", "1d"]:
+            df = load_parquet_data(symbol.upper(), alt_interval)
+            if df is not None and not df.empty:
+                break
+    
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No data available")
+    
+    # Get latest candle
+    latest = df.iloc[-1]
+    
+    # Calculate 24h change (last 24 rows for 1h data)
+    lookback = min(24, len(df) - 1)
+    prev = df.iloc[-lookback-1]
+    
+    return {
+        "symbol": symbol.upper(),
+        "timestamp": latest['timestamp'].isoformat(),
+        "price": {
+            "time": latest['timestamp'].isoformat(),
+            "open": float(latest['open']),
+            "high": float(latest['high']),
+            "low": float(latest['low']),
+            "close": float(latest['close']),
+            "volume": float(latest['volume'])
+        },
+        "price_change_24h": {
+            "current_price": float(latest['close']),
+            "previous_price": float(prev['close']),
+            "change_amount": float(latest['close'] - prev['close']),
+            "change_percent": float((latest['close'] - prev['close']) / prev['close'] * 100)
+        }
+    }
+
+
+@app.get("/api/v1/analysis/indicators")
+async def get_indicators(
+    symbol: str = Query("BTCUSDT"),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    interval: str = Query("1h"),
+    limit: int = Query(1000, le=2000)  # Max 2000 points
+):
+    """Calculate technical indicators"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        for alt_interval in ["1h", "4h", "1d"]:
+            df = load_parquet_data(symbol.upper(), alt_interval)
+            if df is not None and not df.empty:
+                break
+    
+    if df is None or df.empty or len(df) < 50:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Insufficient data. Need 50+ points, found {len(df) if df is not None else 0}"
+        )
+    
+    # Convert timezone-aware datetimes to naive (remove timezone info)
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+    
+    # Filter by date range FIRST to reduce data
+    df = df[(df['timestamp'] >= start_naive) & (df['timestamp'] <= end_naive)]
+    
+    # Take latest N points if still too many
+    if len(df) > limit:
+        df = df.tail(limit)
+    
+    if len(df) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough data in date range. Found {len(df)}, need 50+"
+        )
+    
+    logger.info(f"Processing {len(df)} candles for indicators")
+    
+    # Calculate indicators
+    df['sma_20'] = df['close'].rolling(20).mean()
+    df['sma_50'] = df['close'].rolling(50).mean()
+    df['ema_12'] = df['close'].ewm(span=12).mean()
+    df['ema_26'] = df['close'].ewm(span=26).mean()
+    
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # MACD
+    df['macd'] = df['ema_12'] - df['ema_26']
+    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+    df['macd_histogram'] = df['macd'] - df['macd_signal']
+    
+    # Bollinger Bands
+    df['bb_middle'] = df['close'].rolling(20).mean()
+    bb_std = df['close'].rolling(20).std()
+    df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+    df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+    
+    # Convert to response
+    indicators = []
+    for idx, row in df.iterrows():
+        indicators.append({
+            'timestamp': row['timestamp'].isoformat(),
+            'close': float(row['close']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'open': float(row['open']),
+            'volume': float(row['volume']),
+            'sma_20': float(row['sma_20']) if not pd.isna(row['sma_20']) else None,
+            'sma_50': float(row['sma_50']) if not pd.isna(row['sma_50']) else None,
+            'ema_12': float(row['ema_12']) if not pd.isna(row['ema_12']) else None,
+            'ema_26': float(row['ema_26']) if not pd.isna(row['ema_26']) else None,
+            'rsi': float(row['rsi']) if not pd.isna(row['rsi']) else None,
+            'macd': float(row['macd']) if not pd.isna(row['macd']) else None,
+            'macd_signal': float(row['macd_signal']) if not pd.isna(row['macd_signal']) else None,
+            'macd_histogram': float(row['macd_histogram']) if not pd.isna(row['macd_histogram']) else None,
+            'bb_upper': float(row['bb_upper']) if not pd.isna(row['bb_upper']) else None,
+            'bb_middle': float(row['bb_middle']) if not pd.isna(row['bb_middle']) else None,
+            'bb_lower': float(row['bb_lower']) if not pd.isna(row['bb_lower']) else None
+        })
+    
+    return {'indicators': indicators}
+
+
+@app.get("/api/v1/analysis/risk")
+async def get_risk_metrics(
+    symbol: str = Query("BTCUSDT"),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    interval: str = Query("1h")
+):
+    """Calculate risk metrics: VaR, Sharpe, Drawdown"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No data found")
+    
+    # Convert timezone-aware datetimes to naive
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+    
+    # Filter by date range
+    df = df[(df['timestamp'] >= start_naive) & (df['timestamp'] <= end_naive)]
+    
+    if len(df) < 30:
+        raise HTTPException(status_code=400, detail=f"Need at least 30 candles, found {len(df)}")
+    
+    # Calculate returns
+    df['returns'] = df['close'].pct_change()
+    df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
+    
+    # Calculate cumulative returns for drawdown
+    df['cumulative'] = (1 + df['returns']).cumprod()
+    df['running_max'] = df['cumulative'].expanding().max()
+    df['drawdown'] = (df['cumulative'] - df['running_max']) / df['running_max']
+    
+    # VaR calculations (95% and 99% confidence)
+    returns_clean = df['returns'].dropna()
+    var_95 = np.percentile(returns_clean, 5)
+    var_99 = np.percentile(returns_clean, 1)
+    
+    # Sharpe Ratio (annualized, assuming 365*24 hourly periods per year)
+    periods_per_year = 365 * 24 if interval == "1h" else 365
+    mean_return = returns_clean.mean()
+    std_return = returns_clean.std()
+    sharpe_ratio = (mean_return / std_return) * np.sqrt(periods_per_year) if std_return > 0 else 0
+    
+    # Max Drawdown
+    max_drawdown = df['drawdown'].min()
+    max_drawdown_idx = df['drawdown'].idxmin()
+    max_drawdown_date = df.loc[max_drawdown_idx, 'timestamp'].isoformat() if pd.notna(max_drawdown_idx) else None
+    
+    # Volatility (annualized)
+    volatility = std_return * np.sqrt(periods_per_year)
+    
+    # Current metrics
+    current_price = float(df['close'].iloc[-1])
+    price_change_pct = float(((df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0]) * 100)
+    
+    # Historical data for charts
+    risk_data = []
+    for idx, row in df.iterrows():
+        risk_data.append({
+            'timestamp': row['timestamp'].isoformat(),
+            'close': float(row['close']),
+            'returns': float(row['returns']) if not pd.isna(row['returns']) else None,
+            'drawdown': float(row['drawdown']) if not pd.isna(row['drawdown']) else None,
+            'cumulative': float(row['cumulative']) if not pd.isna(row['cumulative']) else None
+        })
+    
+    return {
+        'metrics': {
+            'var_95': float(var_95) * 100,  # Convert to percentage
+            'var_99': float(var_99) * 100,
+            'sharpe_ratio': float(sharpe_ratio),
+            'max_drawdown': float(max_drawdown) * 100,
+            'max_drawdown_date': max_drawdown_date,
+            'volatility': float(volatility) * 100,
+            'current_price': current_price,
+            'price_change_pct': price_change_pct,
+            'total_periods': len(df),
+        },
+        'data': risk_data
+    }
+
+
+@app.get("/api/v1/decisions/{symbol}")
+async def get_investment_decision(symbol: str, interval: str = Query("1h")):
+    """Get investment decision based on multiple factors"""
+    df = load_parquet_data(symbol.upper(), interval)
+    
+    if df is None or df.empty:
+        for alt_interval in ["1h", "4h", "1d"]:
+            df = load_parquet_data(symbol.upper(), alt_interval)
+            if df is not None and not df.empty:
+                break
+    
+    if df is None or df.empty or len(df) < 30:
+        raise HTTPException(status_code=404, detail="Insufficient data for decision")
+    
+    # Calculate indicators
+    df['returns'] = df['close'].pct_change()
+    df['sma_20'] = df['close'].rolling(20).mean()
+    df['sma_50'] = df['close'].rolling(50).mean()
+    
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # Get latest values
+    latest = df.iloc[-1]
+    
+    # Decision logic
+    signals = []
+    score = 0
+    
+    # Trend signal
+    if latest['close'] > latest['sma_20'] > latest['sma_50']:
+        signals.append({"factor": "Trend", "signal": "Bullish", "weight": 30})
+        score += 30
+    elif latest['close'] < latest['sma_20'] < latest['sma_50']:
+        signals.append({"factor": "Trend", "signal": "Bearish", "weight": -30})
+        score -= 30
+    else:
+        signals.append({"factor": "Trend", "signal": "Neutral", "weight": 0})
+    
+    # RSI signal
+    if latest['rsi'] < 30:
+        signals.append({"factor": "RSI", "signal": "Oversold (Buy)", "weight": 25})
+        score += 25
+    elif latest['rsi'] > 70:
+        signals.append({"factor": "RSI", "signal": "Overbought (Sell)", "weight": -25})
+        score -= 25
+    else:
+        signals.append({"factor": "RSI", "signal": "Neutral", "weight": 0})
+    
+    # Volatility signal
+    vol = df['returns'].std()
+    if vol > 0.03:
+        signals.append({"factor": "Volatility", "signal": "High Risk", "weight": -15})
+        score -= 15
+    elif vol < 0.01:
+        signals.append({"factor": "Volatility", "signal": "Low Risk", "weight": 15})
+        score += 15
+    else:
+        signals.append({"factor": "Volatility", "signal": "Normal", "weight": 0})
+    
+    # Overall recommendation
+    if score > 40:
+        recommendation = "Strong Buy"
+        confidence = "High"
+    elif score > 15:
+        recommendation = "Buy"
+        confidence = "Medium"
+    elif score > -15:
+        recommendation = "Hold"
+        confidence = "Low"
+    elif score > -40:
+        recommendation = "Sell"
+        confidence = "Medium"
+    else:
+        recommendation = "Strong Sell"
+        confidence = "High"
+    
+    return {
+        "symbol": symbol.upper(),
+        "timestamp": latest['timestamp'].isoformat(),
+        "decision": recommendation,
+        "confidence": confidence,
+        "score": score,
+        "signals": signals,
+        "current_price": float(latest['close']),
+        "rsi": float(latest['rsi']) if not pd.isna(latest['rsi']) else None
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("=" * 60)
+    print("🚀 Bitcoin API Server (Parquet Mode)")
+    print("=" * 60)
+    print("📍 Host: 0.0.0.0")
+    print("🔌 Port: 8000")
+    print("📖 Docs: http://localhost:8000/docs")
+    print("📁 Data: Using Parquet files (no database needed)")
+    print("=" * 60)
+    
+    uvicorn.run(
+        "api_server_parquet:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="info"
+    )

@@ -1,0 +1,292 @@
+"""
+Bitcoin Market Intelligence REST API - DEMO VERSION
+FastAPI server with mock data for testing without database.
+"""
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Dict, Any
+from datetime import datetime, timedelta
+from decimal import Decimal
+import asyncio
+import random
+import logging
+import json
+import urllib.request
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI(
+    title="Bitcoin Market Intelligence API (Demo)",
+    description="Demo API with mock real-time data",
+    version="1.0.0-demo"
+)
+
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Real-time data from Binance
+import urllib.request
+
+class RealTimeDataGenerator:
+    def __init__(self):
+        self.base_price = None
+        self.last_update = datetime.now()
+    
+    def get_binance_price(self):
+        """Fetch real BTC price from Binance"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+            with urllib.request.urlopen(url, timeout=3) as response:
+                data = json.loads(response.read().decode())
+                return {
+                    'price': float(data['lastPrice']),
+                    'high': float(data['highPrice']),
+                    'low': float(data['lowPrice']),
+                    'volume': float(data['volume']),
+                    'quote_volume': float(data['quoteVolume']),
+                    'trades': int(data['count']),
+                    'price_change': float(data['priceChange']),
+                    'price_change_pct': float(data['priceChangePercent'])
+                }
+        except Exception as e:
+            logger.warning(f"Failed to fetch Binance data: {e}, using fallback")
+            return None
+    
+    def get_latest_candle(self):
+        """Generate realistic candle data with trending behavior"""
+        # Simulate realistic price movement with trend
+        # 70% chance to follow trend, 30% chance to reverse
+        if random.random() < 0.3:
+            self.trend *= -1  # Reverse trend
+        
+        # Price change follows trend with some randomness
+        trend_strength = random.uniform(0.3, 1.0)
+        change = self.trend * self.volatility * trend_strength * random.uniform(0.5, 1.5)
+        
+        self.base_price += change
+        self.base_price = max(92000, min(98000, self.base_price))
+        
+        # Generate OHLC with realistic candle patterns
+        price_range = random.uniform(50, 200)
+        open_price = self.base_price + random.uniform(-price_range/2, price_range/2)
+        close = self.base_price
+        
+        if close > open_price:  # Bullish candle
+            high = close + random.uniform(0, price_range * 0.3)
+            low = open_price - random.uniform(0, price_range * 0.2)
+        else:  # Bearish candle
+            high = open_price + random.uniform(0, price_range * 0.2)
+            low = close - random.uniform(0, price_range * 0.3)
+        
+        volume = random.uniform(50, 150)
+        
+        candle_data = {
+            "time": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "open": round(open_price, 2),
+            "high": round(high, 2),
+            "low": round(low, 2),
+            "close": round(close, 2),
+            "volume": round(volume, 2),
+            "quote_volume": round(volume * close, 2),
+            "trades": random.randint(800, 1500)
+        }
+        
+        # Log price for debugging
+        logger.info(f"Generated candle: ${close:,.2f} (change: ${change:+.2f})")
+        
+        return candle_data
+    
+    def get_risk_metrics(self):
+        """Generate mock risk metrics"""
+        return {
+            "volatility": random.uniform(0.35, 0.65),
+            "var_95": random.uniform(-0.045, -0.025),
+            "sharpe_ratio": random.uniform(0.8, 1.5),
+            "max_drawdown": random.uniform(-0.15, -0.08)
+        }
+    
+    def get_derivatives(self):
+        """Generate mock derivatives data"""
+        exchanges = ["BINANCE", "BYBIT", "OKX"]
+        return [
+            {
+                "exchange": ex,
+                "funding_rate": random.uniform(-0.0002, 0.0002),
+                "open_interest": random.uniform(15000, 25000),
+                "long_ratio": random.uniform(0.45, 0.55),
+                "short_ratio": random.uniform(0.45, 0.55)
+            }
+            for ex in exchanges
+        ]
+    
+    def get_signals(self):
+        """Generate mock trading signals"""
+        signal_types = ["FUNDING_ARBITRAGE", "MOMENTUM_SURGE", "VOLATILITY_SPIKE"]
+        directions = ["LONG", "SHORT", "NEUTRAL"]
+        strengths = ["STRONG", "MEDIUM", "WEAK"]
+        
+        signals = []
+        for i in range(random.randint(1, 3)):
+            signals.append({
+                "time": (datetime.now() - timedelta(minutes=i*20)).isoformat(),
+                "signal_type": random.choice(signal_types),
+                "strength": random.choice(strengths),
+                "direction": random.choice(directions),
+                "price": round(self.base_price + random.uniform(-500, 500), 2),
+                "reason": "Market conditions detected"
+            })
+        
+        return signals
+
+# Global mock data generator
+mock_gen = MockDataGenerator()
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"New WebSocket connection. Total: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
+
+manager = ConnectionManager()
+
+# Routes
+@app.get("/")
+async def root():
+    return {
+        "name": "Bitcoin Market Intelligence API (Demo)",
+        "version": "1.0.0-demo",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "candles": "/api/v1/candles/{symbol}",
+            "summary": "/api/v1/summary/{symbol}",
+            "websocket": "/ws/live/{symbol}"
+        }
+    }
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "database": "mock (demo mode)",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/api/v1/candles/{symbol}")
+async def get_candles(symbol: str, interval: str = "1m", limit: int = 100):
+    """Get mock candles"""
+    candles = []
+    for i in range(min(limit, 100)):
+        candle = mock_gen.get_latest_candle()
+        candle["time"] = (datetime.now() - timedelta(minutes=i)).isoformat()
+        candles.append(candle)
+    
+    return candles[::-1]  # Reverse to chronological order
+
+@app.get("/api/v1/summary/{symbol}")
+async def get_summary(symbol: str, interval: str = "1h"):
+    """Get mock market summary"""
+    latest_candle = mock_gen.get_latest_candle()
+    
+    return {
+        "symbol": symbol.upper(),
+        "timestamp": datetime.now().isoformat(),
+        "price": latest_candle,
+        "price_change_1h": {
+            "current_price": latest_candle["close"],
+            "previous_price": latest_candle["close"] - random.uniform(-500, 500),
+            "change_amount": random.uniform(-500, 500),
+            "change_percent": random.uniform(-2, 2)
+        },
+        "price_change_24h": {
+            "current_price": latest_candle["close"],
+            "previous_price": latest_candle["close"] - random.uniform(-2000, 2000),
+            "change_amount": random.uniform(-2000, 2000),
+            "change_percent": random.uniform(-5, 5)
+        },
+        "volume_24h": {
+            "total_volume": random.uniform(15000, 25000),
+            "avg_volume": random.uniform(50, 150),
+            "max_volume": random.uniform(200, 400),
+            "trade_count": random.randint(50000, 100000)
+        },
+        "risk_metrics": mock_gen.get_risk_metrics(),
+        "derivatives": mock_gen.get_derivatives(),
+        "recent_signals": mock_gen.get_signals()
+    }
+
+@app.websocket("/ws/live/{symbol}")
+async def websocket_endpoint(websocket: WebSocket, symbol: str):
+    """WebSocket for real-time data streaming"""
+    await manager.connect(websocket)
+    
+    try:
+        while True:
+            # Generate fresh data
+            candle = mock_gen.get_latest_candle()
+            risk = mock_gen.get_risk_metrics()
+            derivatives = mock_gen.get_derivatives()
+            signals = mock_gen.get_signals()
+            
+            # Send to client
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "symbol": symbol.upper(),
+                "candle": candle,
+                "recent_trades_count": random.randint(50, 200),
+                "risk_metrics": risk,
+                "derivatives": derivatives,
+                "recent_signals": signals
+            }
+            
+            await websocket.send_json(data)
+            
+            # Wait 5 seconds
+            await asyncio.sleep(5)
+    
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        logger.info(f"Client disconnected from {symbol}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("=" * 60)
+    print("🚀 Bitcoin Market Intelligence API (DEMO)")
+    print("=" * 60)
+    print("📍 Host: 0.0.0.0")
+    print("🔌 Port: 8000")
+    print("📖 Docs: http://localhost:8000/docs")
+    print("🔴 Live: http://localhost:8501 → Live Trading page")
+    print("⚠️  Using MOCK data (no database required)")
+    print("=" * 60)
+    
+    uvicorn.run(
+        "api_server_demo:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

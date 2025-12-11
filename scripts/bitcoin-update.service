@@ -1,0 +1,23 @@
+[Unit]
+Description=Bitcoin Data Auto-Update Service
+Documentation=file:///home/azune/Documents/coding/Data-analysis-bitcoin/docs/AUTO_UPDATE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=azune
+WorkingDirectory=/home/azune/Documents/coding/Data-analysis-bitcoin
+ExecStart=/home/azune/Documents/coding/Data-analysis-bitcoin/scripts/auto_update.sh
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bitcoin-update
+
+# Security
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
