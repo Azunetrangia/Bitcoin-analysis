@@ -58,9 +58,9 @@ const data = {
     status: "online",
   },
   user: {
-    name: "KRIMSON",
-    email: "krimson@joyco.studio",
-    avatar: "/avatars/user_krimson.png",
+    name: "AZUNE",
+    email: "Bitcoin Analysis Studio",
+    avatar: "/avatars/user_azune.jpg",
   },
 }
 

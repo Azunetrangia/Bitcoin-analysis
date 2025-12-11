@@ -725,6 +725,10 @@ export default function BitcoinMarketOverview() {
                   }}
                   labelStyle={{ color: '#9ca3af' }}
                   itemStyle={{ color: '#f3f4f6' }}
+                  formatter={(value: any) => {
+                    if (value === null || value === undefined || isNaN(value)) return 'N/A';
+                    return typeof value === 'number' ? value.toFixed(2) : value;
+                  }}
                 />
                 <Bar dataKey="volume" radius={[4, 4, 0, 0]} isAnimationActive={false}>
                   {chartData.slice(-50).map((entry, index) => (

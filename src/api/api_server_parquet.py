@@ -10,6 +10,10 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+import sys
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +34,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Startup event - Auto update data
+@app.on_event("startup")
+async def startup_event():
+    """Run on server startup - auto-update market data"""
+    logger.info("🚀 Starting Bitcoin Market Intelligence API...")
+    
+    try:
+        from services.auto_update_data import auto_update_all_intervals
+        
+        logger.info("🔄 Running auto-update on startup...")
+        updated_count = auto_update_all_intervals()
+        
+        if updated_count > 0:
+            logger.info(f"✅ Auto-update complete: {updated_count} intervals updated")
+            # Clear cache to reload updated data
+            global _data_cache
+            _data_cache.clear()
+        else:
+            logger.info("ℹ️  Data is already up-to-date")
+    
+    except Exception as e:
+        logger.warning(f"⚠️  Auto-update failed (will use existing data): {e}")
+    
+    logger.info("✅ Server ready!")
+
 
 # Data directory
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "hot"
@@ -80,6 +111,33 @@ async def health():
         "database": "parquet-files",
         "timestamp": datetime.now()
     }
+
+
+@app.post("/api/v1/refresh-data")
+async def refresh_data():
+    """
+    Manually trigger data refresh.
+    Fetches new candles from Binance and updates parquet files.
+    """
+    try:
+        from services.auto_update_data import auto_update_all_intervals
+        
+        logger.info("🔄 Manual refresh triggered...")
+        updated_count = auto_update_all_intervals()
+        
+        # Clear cache to reload updated data
+        global _data_cache
+        _data_cache.clear()
+        
+        return {
+            "success": True,
+            "message": f"Updated {updated_count} intervals",
+            "timestamp": datetime.now()
+        }
+    
+    except Exception as e:
+        logger.error(f"Refresh failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
 
 
 @app.get("/api/v1/candles/{symbol}")

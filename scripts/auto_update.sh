@@ -42,8 +42,8 @@ fi
 
 # Run update script
 echo ""
-echo "Running incremental update script..."
-"$PYTHON_CMD" "$PROJECT_DIR/scripts/incremental_update.py"
+echo "Running auto update script..."
+"$PYTHON_CMD" -m src.services.auto_update_data
 
 UPDATE_STATUS=$?
 
