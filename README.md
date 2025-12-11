@@ -369,9 +369,3 @@ This project is for **educational and research purposes only**. It is NOT financ
 **Year**: 2025  
 **Tech Stack**: Next.js 15 · React 19 · FastAPI · Python · TypeScript
 
-**Built with ❤️ using Clean Architecture & Modern Web Technologies**
-
-**Author**: Azunetrangia  
-**Year**: 2025  
-**Tech Stack**: Next.js 15 · React 19 · FastAPI · Python · TypeScript
-
