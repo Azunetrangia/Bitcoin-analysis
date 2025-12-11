@@ -723,6 +723,8 @@ export default function BitcoinMarketOverview() {
                     color: "#f3f4f6",
                     borderRadius: "6px"
                   }}
+                  labelStyle={{ color: '#9ca3af' }}
+                  itemStyle={{ color: '#f3f4f6' }}
                 />
                 <Bar dataKey="volume" radius={[4, 4, 0, 0]} isAnimationActive={false}>
                   {chartData.slice(-50).map((entry, index) => (
@@ -735,8 +737,8 @@ export default function BitcoinMarketOverview() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
             {volumeStats.map((stat, index) => (
               <div key={index} className="border border-border rounded-lg p-4">
-                <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-                <p className="text-sm font-semibold">{stat.value}</p>
+                <p className="text-xs mb-1" style={{ color: '#9ca3af' }}>{stat.label}</p>
+                <p className="text-sm font-semibold" style={{ color: '#f3f4f6' }}>{stat.value}</p>
               </div>
             ))}
           </div>
