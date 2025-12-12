@@ -1632,9 +1632,656 @@ For bug reports and feature requests, please open an issue on GitHub.
 
 
 ========================================
+EXPERT REVIEW & RECOMMENDATIONS
+========================================
+
+Source: Google Gemini AI Analysis
+Date: December 12, 2025
+Overall Grade: 8.5/10 (High Practicality)
+
+EXECUTIVE SUMMARY:
+------------------
+
+The "No-Database" architecture using Parquet + FastAPI is an exceptionally smart choice 
+for personal or small-scale projects. It eliminates database maintenance costs while 
+ensuring extremely fast historical data access.
+
+Strengths:
+✅ Multi-factor thinking (HMM + KAMA + On-chain)
+✅ Modern tech stack (Next.js 15, Python 3.13)
+✅ Professional approach to label switching in HMM
+✅ Excellent choice of KAMA for Bitcoin trading
+
+Critical Issues Identified:
+⚠️ Market Cap factor is redundant in 30-second signals
+⚠️ Funding Rate checking every 30s is unnecessary
+⚠️ Potential "backpainting" issue with HMM Viterbi algorithm
+⚠️ Missing Circuit Breaker for risk management
+⚠️ Should use WebSocket instead of API polling
+
+
+DETAILED AUDIT BY MODULE:
+========================================
+
+1. TRADING SIGNALS SYSTEM
+   -----------------------
+   
+   Current Logic:
+   Score = HMM (±30) + KAMA (±15) + Funding (±10) + Market Cap (±10)
+   
+   CRITICAL ISSUES:
+   
+   A. Market Cap Factor (Weight: 10) - REDUNDANT
+   ---------------------------------------------
+   Problem:
+   - Market Cap = Price × Circulating Supply
+   - Supply is constant, so Market Cap changes = Price changes
+   - In 30-second timeframe, Market Cap provides ZERO new information
+   - Using it as trading trigger is redundant and lacks sensitivity
+   
+   Example:
+   - BTC at $90,000: Market Cap = $1.8T
+   - BTC at $92,000: Market Cap = $1.84T
+   - The 2.2% change is already captured by price/KAMA
+   - Market Cap adds no predictive value
+   
+   RECOMMENDATION:
+   Replace Market Cap with Volume Anomaly (RVOL):
+   ```python
+   # Volume Relative to Average
+   current_volume = df.iloc[-1]['volume']
+   avg_volume_20 = df['volume'].rolling(20).mean().iloc[-1]
+   rvol = current_volume / avg_volume_20
+   
+   if rvol > 2.0:  # 200% of average
+       volume_weight = 10  # Strong buying pressure
+   elif rvol > 1.5:
+       volume_weight = 5
+   elif rvol < 0.5:
+       volume_weight = -5  # Low volume = weak trend
+   else:
+       volume_weight = 0
+   ```
+   
+   Alternative: Order Flow Imbalance
+   ```python
+   # Buy vs Sell Volume ratio
+   buy_volume = df['buy_volume'].sum()  # Requires taker buy volume data
+   sell_volume = df['sell_volume'].sum()
+   
+   imbalance = (buy_volume - sell_volume) / (buy_volume + sell_volume)
+   
+   if imbalance > 0.3:
+       flow_weight = 10  # Strong buy pressure
+   elif imbalance < -0.3:
+       flow_weight = -10  # Strong sell pressure
+   else:
+       flow_weight = 0
+   ```
+   
+   Why This Is Better:
+   - Volume Anomaly captures "smart money" movements
+   - Order Flow shows actual buying/selling pressure
+   - These are REAL signals in 30-second timeframe
+   - Market Cap should be used as FILTER, not FACTOR
+   
+   
+   B. Funding Rate Factor (Weight: 10) - TIMING ISSUE
+   --------------------------------------------------
+   Problem:
+   - Funding Rate on exchanges updates every 8 hours (or 1 hour on some)
+   - Checking it every 30 seconds creates false signals
+   - If API returns stale data, signal doesn't change but appears "new"
+   
+   Example Timeline:
+   - 00:00:00 - Funding Rate = 0.01% (updated)
+   - 00:00:30 - Bot checks, same 0.01% (no new info)
+   - 00:01:00 - Bot checks, same 0.01% (no new info)
+   - ... [repeats for 8 hours]
+   - 08:00:00 - Funding Rate = 0.015% (updated)
+   
+   RECOMMENDATION:
+   Keep Funding Rate but adjust logic:
+   ```python
+   # Cache funding rate with timestamp
+   if not hasattr(cache, 'last_funding_update'):
+       cache.last_funding_update = None
+   
+   current_time = datetime.now()
+   
+   # Only update if 1+ hour has passed
+   if (cache.last_funding_update is None or 
+       (current_time - cache.last_funding_update).seconds > 3600):
+       
+       funding_rate = fetch_funding_rate_from_api()
+       cache.funding_rate = funding_rate
+       cache.last_funding_update = current_time
+   else:
+       funding_rate = cache.funding_rate  # Use cached value
+   ```
+   
+   Alternative Use:
+   Use Funding Rate as FILTER instead of FACTOR:
+   - If Funding > 0.05%: Block all BUY signals (market overheated)
+   - If Funding < -0.05%: Block all SELL signals (market oversold)
+   
+   
+   C. Improved Signal Formula
+   --------------------------
+   NEW RECOMMENDATION:
+   ```python
+   score = 0
+   
+   # Factor 1: HMM Regime (Weight: ±35) - INCREASED
+   if regime == "Bull" and confidence == "high":
+       score += 35
+   elif regime == "Bear" and confidence == "high":
+       score -= 35
+   # ... (keep existing logic)
+   
+   # Factor 2: KAMA Indicator (Weight: ±20) - INCREASED
+   if kama_signal == "BULLISH" and abs(distance) > 2.0:
+       score += 20
+   # ... (keep existing logic)
+   
+   # Factor 3: Volume Anomaly (Weight: ±15) - NEW
+   rvol = current_volume / avg_volume_20
+   if rvol > 2.0:
+       score += 15
+   elif rvol > 1.5:
+       score += 10
+   elif rvol < 0.5:
+       score -= 10
+   else:
+       score += 0
+   
+   # Factor 4: Price Momentum (Weight: ±10) - NEW
+   returns_5m = (close[-1] / close[-10]) - 1  # 5-min return
+   if returns_5m > 0.005:  # +0.5%
+       score += 10
+   elif returns_5m < -0.005:
+       score -= 10
+   
+   # FILTERS (Not factors, just blocks):
+   # Filter 1: Funding Rate
+   if funding_rate > 0.05:
+       if score > 0:  # Block BUY
+           score = min(score, 0)
+   
+   # Filter 2: Market Cap/MVRV (Weekly check)
+   if mvrv_ratio > 3.5:  # Extremely overvalued
+       if score > 0:
+           score = min(score, 0)  # Block BUY
+   
+   # Total range: -80 to +80
+   ```
+
+
+2. HMM REGIME CLASSIFICATION
+   --------------------------
+   
+   CRITICAL ISSUE: Backpainting (Re-labeling Past States)
+   -------------------------------------------------------
+   
+   Current Problem:
+   ```python
+   # Your current code:
+   hidden_states = model.predict(X)  # Uses Viterbi algorithm
+   df['regime'] = [state_labels[state] for state in hidden_states]
+   ```
+   
+   Why This Is Wrong for Real-time:
+   - Viterbi algorithm finds the MOST LIKELY sequence of states
+   - It looks at the ENTIRE sequence (past + present + future in training)
+   - When new candle (t+1) arrives, Viterbi may CHANGE states at (t-1, t)
+   - This causes "flickering" - regime changes in historical data
+   
+   Example:
+   ```
+   Time    | Candle | First Run | After New Candle
+   --------|--------|-----------|------------------
+   10:00   | Close  | Bull      | Bull (unchanged)
+   10:01   | Close  | Bull      | Sideways (CHANGED!)
+   10:02   | Close  | Bull      | Bull (unchanged)
+   10:03   | NEW    | ???       | Bull
+   ```
+   
+   SOLUTION: Use Posterior Probability of Last State
+   --------------------------------------------------
+   
+   Correct Implementation:
+   ```python
+   # Training (Daily batch):
+   def train_hmm_model(df):
+       X = prepare_features(df)
+       model = GaussianHMM(n_components=4, covariance_type="full", n_iter=1000)
+       model.fit(X)
+       
+       # Save model parameters
+       joblib.dump(model, 'hmm_model.pkl')
+       return model
+   
+   # Real-time Inference (Every 30s):
+   def get_current_regime(new_candles):
+       # Load pre-trained model
+       model = joblib.load('hmm_model.pkl')
+       
+       # Prepare recent window (e.g., last 50 candles)
+       X_window = prepare_features(new_candles[-50:])
+       
+       # Get posterior probabilities
+       # This uses Forward algorithm (not Viterbi)
+       # It gives probability distribution of CURRENT state only
+       posteriors = model.predict_proba(X_window)
+       
+       # Current state = state with highest probability at last timestamp
+       current_state_probs = posteriors[-1]
+       current_state = np.argmax(current_state_probs)
+       current_prob = current_state_probs[current_state]
+       
+       # Map to label
+       current_regime = state_labels[current_state]
+       
+       return {
+           'regime': current_regime,
+           'probability': float(current_prob),
+           'confidence': 'high' if current_prob > 0.7 else 'medium' if current_prob > 0.5 else 'low'
+       }
+   ```
+   
+   Why This Works:
+   - `predict_proba()` uses Forward algorithm
+   - Only looks at data UP TO current timestamp
+   - Never changes past states when new data arrives
+   - Gives true "online" prediction
+   
+   Training Schedule:
+   ```python
+   # Option 1: Daily retrain (at 00:00 UTC)
+   if datetime.now().hour == 0 and datetime.now().minute == 0:
+       model = train_hmm_model(last_90_days_data)
+       save_model(model)
+   
+   # Option 2: Weekly retrain (every Sunday)
+   if datetime.now().weekday() == 6 and datetime.now().hour == 0:
+       model = train_hmm_model(last_90_days_data)
+       save_model(model)
+   ```
+
+
+3. KAMA INDICATOR
+   ---------------
+   
+   ASSESSMENT: Excellent Choice ✅
+   -------------------------------
+   
+   Why KAMA Is Perfect for Bitcoin:
+   - Goes FLAT during sideways/choppy markets → Reduces false signals
+   - Hugs price closely during breakouts → Catches trends fast
+   - Adaptive nature matches Bitcoin's volatility shifts
+   
+   Current Parameters: (10, 2, 30) - Good defaults
+   
+   ONLY CONCERN: Noise on Low Timeframes
+   --------------------------------------
+   
+   If you're polling every 30 seconds:
+   ```python
+   # Problem: Too much noise on 30s candles
+   kama_30s = calculate_kama(prices_30s, n=10, fast=2, slow=30)
+   # KAMA will be jittery, efficiency ratio unstable
+   
+   # Solution: Calculate KAMA on stable timeframe
+   # Even if bot runs 30s, use 5-minute closes
+   kama_5m = calculate_kama(prices_5m, n=10, fast=2, slow=30)
+   
+   # Use current price vs KAMA_5m for distance
+   current_price = prices_30s.iloc[-1]
+   kama_value = kama_5m.iloc[-1]
+   distance = (current_price - kama_value) / kama_value * 100
+   ```
+   
+   Alternative: KAMA with Volume Weighting
+   ----------------------------------------
+   ```python
+   def calculate_vwkama(prices, volume, n=10, fast=2, slow=30):
+       """Volume-Weighted KAMA for better signal"""
+       
+       # Standard KAMA calculation
+       kama = calculate_kama(prices, n, fast, slow)
+       
+       # Volume weight: Recent high volume = trust KAMA more
+       avg_volume = volume.rolling(20).mean()
+       volume_ratio = volume / avg_volume
+       
+       # Adjust distance threshold based on volume
+       if volume_ratio.iloc[-1] > 1.5:
+           threshold = 0.3  # Tighter threshold when volume high
+       else:
+           threshold = 0.7  # Wider threshold when volume low
+       
+       return kama, threshold
+   ```
+
+
+4. RISK MANAGEMENT
+   ----------------
+   
+   CRITICAL MISSING FEATURE: Circuit Breaker
+   -----------------------------------------
+   
+   Current System:
+   - Calculates VaR, Sharpe, Drawdown
+   - BUT: No automatic protection
+   - Bot keeps trading even during 20% drawdown
+   
+   RECOMMENDATION: Add Circuit Breaker Logic
+   -----------------------------------------
+   
+   ```python
+   def check_circuit_breaker(portfolio_value, peak_value):
+       """
+       Automatically halt trading if losses exceed threshold
+       """
+       
+       # Calculate current drawdown
+       current_drawdown = (portfolio_value - peak_value) / peak_value
+       
+       # Circuit Breaker Levels
+       if current_drawdown < -0.10:  # -10%
+           return {
+               'status': 'EMERGENCY_STOP',
+               'action': 'SELL_ALL_TO_USDT',
+               'reason': 'Drawdown exceeded 10% - Emergency exit',
+               'cooldown': 24 * 3600  # 24 hours
+           }
+       
+       elif current_drawdown < -0.05:  # -5%
+           return {
+               'status': 'DEFENSIVE',
+               'action': 'SELL_50%_REDUCE_SIZE',
+               'reason': 'Drawdown at 5% - Reducing exposure',
+               'cooldown': 12 * 3600  # 12 hours
+           }
+       
+       elif current_drawdown < -0.03:  # -3%
+           return {
+               'status': 'CAUTIOUS',
+               'action': 'NO_NEW_POSITIONS',
+               'reason': 'Drawdown at 3% - No new trades',
+               'cooldown': 6 * 3600  # 6 hours
+           }
+       
+       else:
+           return {
+               'status': 'NORMAL',
+               'action': 'TRADE_FREELY',
+               'reason': 'Risk within acceptable range'
+           }
+   
+   
+   # Usage in trading loop:
+   breaker_status = check_circuit_breaker(current_value, peak_value)
+   
+   if breaker_status['status'] == 'EMERGENCY_STOP':
+       sell_all_positions()
+       send_telegram_alert("🚨 EMERGENCY STOP TRIGGERED")
+       sleep(breaker_status['cooldown'])
+   
+   elif breaker_status['status'] == 'DEFENSIVE':
+       reduce_position_size(factor=0.5)
+       cancel_all_pending_orders()
+   
+   elif breaker_status['status'] == 'CAUTIOUS':
+       if signal == 'BUY':
+           signal = 'HOLD'  # Block new longs
+   ```
+   
+   
+   RECOMMENDATION: Add CVaR (Conditional VaR)
+   ------------------------------------------
+   
+   Problem with VaR:
+   - VaR 95% = -2.5% means: "95% of days, loss won't exceed 2.5%"
+   - BUT: What about the OTHER 5%? Could be -3%, -10%, or -50%
+   - VaR doesn't tell you how bad the tail events are
+   
+   CVaR (Expected Shortfall):
+   - CVaR 95% = Average loss WHEN loss exceeds VaR threshold
+   - Example: VaR = -2.5%, CVaR = -8.2%
+   - This means: "When bad days happen, expect -8.2% average loss"
+   
+   Implementation:
+   ```python
+   def calculate_cvar(returns, confidence_level=0.95):
+       """
+       Conditional Value at Risk (CVaR / Expected Shortfall)
+       """
+       
+       # Calculate VaR first
+       var_threshold = returns.quantile(1 - confidence_level)
+       
+       # CVaR = Average of all returns below VaR
+       # (i.e., average loss in the worst 5% of cases)
+       tail_losses = returns[returns <= var_threshold]
+       cvar = tail_losses.mean()
+       
+       return {
+           'var_95': float(var_threshold * 100),
+           'cvar_95': float(cvar * 100),
+           'interpretation': f"When losses occur, expect avg loss of {abs(cvar*100):.2f}%"
+       }
+   
+   # Example output:
+   # VaR 95%: -2.3%
+   # CVaR 95%: -7.8%
+   # → This reveals Bitcoin has fat tails (extreme downside)
+   ```
+
+
+5. REAL-TIME DATA STRATEGY
+   ------------------------
+   
+   QUESTION: Should we use real-time data fetch like TradingView?
+   ANSWER: YES, but NOT through TradingView
+   
+   Why NOT TradingView:
+   --------------------
+   1. Pine Script runs client-side or on TradingView servers
+   2. Limited computational power for HMM (matrix multiplications)
+   3. No native Python libraries (numpy, hmmlearn)
+   4. Alert delays and integration difficulties
+   5. Cannot combine HMM + KAMA + On-chain in one script
+   
+   Correct Approach: Python Backend + WebSocket
+   ---------------------------------------------
+   
+   Option 1: WebSocket (BEST - Recommended)
+   ```python
+   import websocket
+   import json
+   
+   def on_message(ws, message):
+       """
+       Binance WebSocket sends data every tick
+       No polling needed, instant updates
+       """
+       data = json.loads(message)
+       
+       # Extract OHLCV
+       timestamp = data['E']  # Event time
+       price = float(data['c'])  # Close price
+       volume = float(data['v'])  # Volume
+       
+       # Update buffer
+       price_buffer.append(price)
+       
+       # Every 30 seconds, run strategy
+       if len(price_buffer) >= 30:
+           run_strategy(price_buffer)
+           price_buffer.clear()
+   
+   
+   def on_error(ws, error):
+       print(f"WebSocket Error: {error}")
+   
+   def on_close(ws):
+       print("WebSocket Closed - Reconnecting...")
+       connect_websocket()
+   
+   def on_open(ws):
+       # Subscribe to BTC/USDT 1-second ticker
+       subscribe_msg = {
+           "method": "SUBSCRIBE",
+           "params": ["btcusdt@ticker"],
+           "id": 1
+       }
+       ws.send(json.dumps(subscribe_msg))
+   
+   # Connect
+   ws = websocket.WebSocketApp(
+       "wss://stream.binance.com:9443/ws/btcusdt@ticker",
+       on_message=on_message,
+       on_error=on_error,
+       on_close=on_close,
+       on_open=on_open
+   )
+   
+   ws.run_forever()
+   ```
+   
+   Option 2: CCXT Library (Easier but Polling)
+   ```python
+   import ccxt
+   
+   exchange = ccxt.binance({
+       'enableRateLimit': True,
+       'options': {'defaultType': 'future'}
+   })
+   
+   while True:
+       # Fetch latest ticker
+       ticker = exchange.fetch_ticker('BTC/USDT')
+       
+       price = ticker['last']
+       volume_24h = ticker['quoteVolume']
+       
+       # Run strategy
+       signal = generate_signal(price)
+       
+       # Sleep 30 seconds
+       time.sleep(30)
+   ```
+   
+   Why WebSocket > Polling:
+   - WebSocket: 0ms latency, instant data
+   - Polling: 100-500ms latency per request
+   - WebSocket: No rate limits
+   - Polling: 1200 requests/minute limit (Binance)
+   - WebSocket: Single connection
+   - Polling: New HTTP request every 30s
+   
+   
+   Training Strategy: Warm Start (No Re-train)
+   --------------------------------------------
+   
+   WRONG WAY (Current):
+   ```python
+   # Every 30 seconds:
+   model = GaussianHMM(...)
+   model.fit(last_90_days)  # ⚠️ 5-10 seconds to train!
+   regime = model.predict(...)
+   ```
+   
+   RIGHT WAY (Recommended):
+   ```python
+   # Daily at 00:00 UTC:
+   def daily_batch_training():
+       df = load_parquet('BTCUSDT_1h.parquet')
+       df = df[-2160:]  # Last 90 days
+       
+       X = prepare_features(df)
+       model = GaussianHMM(n_components=4, covariance_type='full', n_iter=1000)
+       model.fit(X)
+       
+       # Save model parameters
+       joblib.dump(model, 'models/hmm_model.pkl')
+       print("Model retrained and saved")
+   
+   # Every 30 seconds:
+   def realtime_inference():
+       # Load pre-trained model (10ms to load)
+       model = joblib.load('models/hmm_model.pkl')
+       
+       # Get recent window
+       recent_candles = fetch_recent_candles(limit=50)
+       X_recent = prepare_features(recent_candles)
+       
+       # Inference only (1-2ms)
+       posteriors = model.predict_proba(X_recent)
+       current_regime = np.argmax(posteriors[-1])
+       
+       return state_labels[current_regime]
+   ```
+   
+   Benefits:
+   - Training: Once per day (10 seconds) ✅
+   - Inference: Sub-millisecond ✅
+   - No flickering/backpainting ✅
+   - Model stability ✅
+
+
+6. PRODUCTION READINESS CHECKLIST
+   --------------------------------
+   
+   Before deploying to production:
+   
+   [ ] Replace Market Cap with Volume Anomaly in signal formula
+   [ ] Fix HMM inference to use predict_proba() instead of predict()
+   [ ] Implement Circuit Breaker with 3 levels (3%, 5%, 10%)
+   [ ] Add CVaR to risk dashboard
+   [ ] Switch from API polling to WebSocket
+   [ ] Separate training (daily) from inference (real-time)
+   [ ] Add logging for all trades and signals
+   [ ] Implement Telegram alerts for critical events
+   [ ] Add unit tests for signal calculation
+   [ ] Set up monitoring (Prometheus + Grafana)
+   [ ] Add database for trade history (optional)
+   [ ] Implement position sizing (Kelly Criterion or fixed %)
+   [ ] Add slippage model to backtesting
+   [ ] Test with paper trading for 2 weeks minimum
+
+
+FINAL VERDICT:
+========================================
+
+Current State: 8.5/10
+- Excellent architecture and tech stack
+- Strong foundation for production system
+- Well-documented and maintainable code
+
+Critical Path to 10/10:
+1. Fix signal formula (remove Market Cap redundancy)
+2. Fix HMM backpainting issue
+3. Add Circuit Breaker
+4. Implement WebSocket for real-time data
+
+This project is VERY CLOSE to production-ready for personal trading
+or portfolio demonstration for job applications / fundraising.
+
+Next Steps:
+1. Implement fixes (1 week)
+2. Paper trading (2 weeks)
+3. Small capital live testing ($100-1000)
+4. Scale up gradually based on performance
+
+Good luck! 🚀
+
+
+========================================
 END OF PROJECT SUMMARY
 ========================================
 
-Document Version: 1.0
-Last Updated: December 12, 2025
-Total Lines: 850+
+Document Version: 2.0
+Last Updated: December 12, 2025 (with Expert Review)
+Total Lines: 2000+
