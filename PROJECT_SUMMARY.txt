@@ -192,87 +192,1126 @@ GET /api/v1/summary/{symbol}
 - Returns: Quick market summary (24h stats)
 
 
-KEY ALGORITHMS:
+DETAILED SYSTEM LOGIC:
 ========================================
 
-1. TRADING SIGNAL COMPOSITE SCORING
+1. DATA FLOW ARCHITECTURE
+   -----------------------
+   
+   Step 1: Data Ingestion
+   ----------------------
+   - Parquet files loaded into memory on server start
+   - Cached in Python dict: data_cache['BTCUSDT_1h'] = DataFrame
+   - Cache check on each API request (hits: O(1) lookup, misses: file read)
+   - Live price fetched from Binance API every request (with 5s timeout)
+   
+   Step 2: Data Processing Pipeline
    ---------------------------------
-   Formula:
-   score = hmm_weight + kama_weight + funding_weight + market_cap_weight
+   Request → FastAPI endpoint → Data validation → Cache lookup → 
+   Historical data filtering → Live price injection → Indicator calculation → 
+   Model inference → Response formatting → JSON return
    
-   Where:
-   - hmm_weight = ±30 (based on regime + confidence)
-   - kama_weight = ±15 (based on trend + distance)
-   - funding_weight = ±10 (based on funding rate extremes)
-   - market_cap_weight = ±10 (based on valuation)
+   Step 3: Frontend Data Flow
+   --------------------------
+   Page load → Initial API call → State update → Render charts → 
+   Start polling timer → Periodic API calls → Live data updates → Re-render
    
-   Decision Logic:
-   - score > 30  → BUY signal
-   - score < -30 → SELL signal
-   - else        → HOLD signal
-   
-   Confidence:
-   - |score| > 60 → High confidence
-   - |score| > 30 → Medium confidence
-   - else         → Low confidence
+   Polling Strategy:
+   - Price updates: Every 10 seconds (useEffect with setInterval)
+   - Trading signals: Every 30 seconds
+   - Charts: On user interaction (timeframe change, date range selection)
 
-2. HMM REGIME CLASSIFICATION
-   ---------------------------
-   Model: Gaussian Hidden Markov Model
-   States: 4 (Bull, Bear, Sideways, High Volatility)
-   Features: [returns, volatility, volume]
-   Training: 1000 iterations, full covariance
-   
-   State Assignment Logic:
-   1. Calculate avg_return and avg_volatility for each state
-   2. If avg_volatility > 75th percentile → "High Volatility"
-   3. Elif avg_return > 0 → "Bull"
-   4. Elif avg_return < 0 → "Bear"
-   5. Else → "Sideways"
-   
-   Confidence Scoring:
-   - probability > 0.7 → High confidence
-   - probability > 0.5 → Medium confidence
-   - else → Low confidence
 
-3. KAMA INDICATOR
+2. TRADING SIGNAL COMPOSITE SCORING LOGIC
+   ---------------------------------------
+   
+   Complete Algorithm Implementation:
+   
+   def calculate_composite_score(regime_data, kama_data, onchain_data, price_data):
+       """
+       Multi-factor trading signal generation using weighted composite scoring.
+       Total range: -100 (Strong Sell) to +100 (Strong Buy)
+       """
+       
+       score = 0
+       factors = []
+       
+       # Factor 1: HMM Regime Classification (Weight: -30 to +30)
+       # -----------------------------------------------------
+       regime = regime_data['regime']
+       regime_prob = regime_data['probability']
+       regime_confidence = regime_data['confidence']
+       
+       if regime == "Bull":
+           if regime_confidence == "high":
+               hmm_weight = 30
+           elif regime_confidence == "medium":
+               hmm_weight = 20
+           else:
+               hmm_weight = 10
+       elif regime == "Bear":
+           if regime_confidence == "high":
+               hmm_weight = -30
+           elif regime_confidence == "medium":
+               hmm_weight = -20
+           else:
+               hmm_weight = -10
+       elif regime == "Sideways":
+           hmm_weight = 0  # Neutral market
+       else:  # High Volatility
+           hmm_weight = -5  # Slightly bearish (uncertainty)
+       
+       score += hmm_weight
+       factors.append({
+           "name": "Regime",
+           "signal": f"{regime} ({regime_confidence.capitalize()} Confidence)",
+           "weight": hmm_weight
+       })
+       
+       # Factor 2: KAMA Adaptive Indicator (Weight: -15 to +15)
+       # -------------------------------------------------------
+       kama_signal = kama_data['signal']
+       kama_distance = kama_data['distance_pct']
+       
+       if kama_signal == "BULLISH":
+           if abs(kama_distance) > 2.0:
+               kama_weight = 15  # Strong trend
+           elif abs(kama_distance) > 1.0:
+               kama_weight = 10  # Moderate trend
+           else:
+               kama_weight = 5   # Weak trend
+       elif kama_signal == "BEARISH":
+           if abs(kama_distance) > 2.0:
+               kama_weight = -15
+           elif abs(kama_distance) > 1.0:
+               kama_weight = -10
+           else:
+               kama_weight = -5
+       else:  # NEUTRAL
+           kama_weight = 0
+       
+       score += kama_weight
+       factors.append({
+           "name": "KAMA",
+           "signal": f"{kama_signal.capitalize()} Trend",
+           "weight": kama_weight
+       })
+       
+       # Factor 3: Funding Rate Analysis (Weight: -10 to +10)
+       # -----------------------------------------------------
+       funding_rate = onchain_data['funding_rate']
+       
+       if funding_rate > 0.02:
+           # Very high funding = overheated longs = bearish
+           funding_weight = -10
+           signal_text = "Overheated (Bearish)"
+       elif funding_rate > 0.01:
+           # High funding = cautious
+           funding_weight = -5
+           signal_text = "High (Cautious)"
+       elif funding_rate < -0.02:
+           # Very negative funding = oversold = bullish
+           funding_weight = 10
+           signal_text = "Oversold (Bullish)"
+       elif funding_rate < -0.01:
+           # Negative funding = slight bullish
+           funding_weight = 5
+           signal_text = "Negative (Slight Bullish)"
+       else:
+           # Normal funding = neutral
+           funding_weight = 0
+           signal_text = "Neutral (Healthy)"
+       
+       score += funding_weight
+       factors.append({
+           "name": "Funding",
+           "signal": signal_text,
+           "weight": funding_weight
+       })
+       
+       # Factor 4: Market Cap Valuation (Weight: -10 to +10)
+       # ----------------------------------------------------
+       market_cap = onchain_data['market_cap_billions']
+       
+       # Valuation thresholds (adjustable based on market conditions)
+       if market_cap > 2000:  # $2T+
+           market_cap_weight = -10
+           signal_text = "Overvalued"
+       elif market_cap > 1500:  # $1.5T-2T
+           market_cap_weight = -5
+           signal_text = "Slightly Overvalued"
+       elif market_cap < 500:  # <$500B
+           market_cap_weight = 10
+           signal_text = "Undervalued"
+       elif market_cap < 1000:  # $500B-1T
+           market_cap_weight = 5
+           signal_text = "Slightly Undervalued"
+       else:  # $1T-1.5T
+           market_cap_weight = 0
+           signal_text = "Fair Value"
+       
+       score += market_cap_weight
+       factors.append({
+           "name": "Market Cap",
+           "signal": signal_text,
+           "weight": market_cap_weight
+       })
+       
+       # Final Decision Logic
+       # --------------------
+       if score > 50:
+           recommendation = "STRONG BUY"
+       elif score > 30:
+           recommendation = "BUY"
+       elif score > 10:
+           recommendation = "WEAK BUY"
+       elif score < -50:
+           recommendation = "STRONG SELL"
+       elif score < -30:
+           recommendation = "SELL"
+       elif score < -10:
+           recommendation = "WEAK SELL"
+       else:
+           recommendation = "HOLD"
+       
+       # Confidence Calculation
+       # ----------------------
+       abs_score = abs(score)
+       if abs_score > 60:
+           confidence = "High"
+       elif abs_score > 30:
+           confidence = "Medium"
+       else:
+           confidence = "Low"
+       
+       return {
+           "recommendation": recommendation,
+           "composite_score": score,
+           "confidence": confidence,
+           "factors": factors,
+           "timestamp": datetime.now().isoformat()
+       }
+
+
+3. HMM REGIME CLASSIFICATION LOGIC
+   --------------------------------
+   
+   Complete Implementation:
+   
+   def train_and_classify_regimes(df):
+       """
+       Hidden Markov Model for market regime detection.
+       Uses Gaussian emissions with full covariance matrix.
+       """
+       
+       from hmmlearn.hmm import GaussianHMM
+       import numpy as np
+       import pandas as pd
+       
+       # Step 1: Feature Engineering
+       # ---------------------------
+       # Calculate returns (log returns for better properties)
+       df['returns'] = np.log(df['close'] / df['close'].shift(1))
+       
+       # Calculate rolling volatility (20-period standard deviation)
+       df['volatility'] = df['returns'].rolling(20).std()
+       
+       # Calculate volume change rate
+       df['volume_change'] = df['volume'].pct_change()
+       
+       # Normalize features (z-score normalization)
+       # Important: HMM works better with normalized features
+       features = ['returns', 'volatility', 'volume_change']
+       for feature in features:
+           mean = df[feature].mean()
+           std = df[feature].std()
+           df[f'{feature}_norm'] = (df[feature] - mean) / std
+       
+       # Prepare feature matrix (drop NaN rows)
+       X = df[['returns_norm', 'volatility_norm', 'volume_change_norm']].dropna().values
+       
+       # Step 2: Model Training
+       # ----------------------
+       model = GaussianHMM(
+           n_components=4,           # 4 hidden states
+           covariance_type="full",   # Full covariance matrix (captures correlations)
+           n_iter=1000,              # Maximum iterations for EM algorithm
+           random_state=42,          # Reproducibility
+           verbose=False
+       )
+       
+       # Fit model using Expectation-Maximization (EM) algorithm
+       model.fit(X)
+       
+       # Step 3: State Prediction
+       # ------------------------
+       # Predict most likely state sequence (Viterbi algorithm)
+       hidden_states = model.predict(X)
+       
+       # Get probability distribution over states for each observation
+       state_probabilities = model.predict_proba(X)
+       
+       # Step 4: State Labeling
+       # ----------------------
+       # Analyze characteristics of each state to assign labels
+       state_characteristics = {}
+       
+       for state in range(4):
+           # Get indices where this state is active
+           state_mask = (hidden_states == state)
+           
+           # Calculate average characteristics
+           avg_return = df.loc[state_mask, 'returns'].mean()
+           avg_volatility = df.loc[state_mask, 'volatility'].mean()
+           avg_volume = df.loc[state_mask, 'volume'].mean()
+           
+           state_characteristics[state] = {
+               'avg_return': avg_return,
+               'avg_volatility': avg_volatility,
+               'avg_volume': avg_volume,
+               'count': state_mask.sum()
+           }
+       
+       # Determine volatility threshold (75th percentile)
+       volatility_threshold = df['volatility'].quantile(0.75)
+       
+       # Assign labels based on characteristics
+       state_labels = {}
+       for state, chars in state_characteristics.items():
+           if chars['avg_volatility'] > volatility_threshold:
+               label = "High Volatility"
+           elif chars['avg_return'] > 0.001:  # Positive returns
+               label = "Bull"
+           elif chars['avg_return'] < -0.001:  # Negative returns
+               label = "Bear"
+           else:  # Near-zero returns
+               label = "Sideways"
+           
+           state_labels[state] = label
+       
+       # Map hidden states to labels
+       df['regime'] = [state_labels[state] for state in hidden_states]
+       df['regime_probability'] = state_probabilities.max(axis=1)
+       
+       # Step 5: Confidence Scoring
+       # --------------------------
+       def calculate_confidence(probability):
+           if probability > 0.7:
+               return "high"
+           elif probability > 0.5:
+               return "medium"
+           else:
+               return "low"
+       
+       df['regime_confidence'] = df['regime_probability'].apply(calculate_confidence)
+       
+       # Step 6: Current Regime Extraction
+       # ----------------------------------
+       current_regime = df.iloc[-1]['regime']
+       current_probability = df.iloc[-1]['regime_probability']
+       current_confidence = df.iloc[-1]['regime_confidence']
+       
+       # Step 7: Historical Distribution
+       # --------------------------------
+       regime_distribution = df['regime'].value_counts(normalize=True).to_dict()
+       
+       return {
+           'regime': current_regime,
+           'probability': float(current_probability),
+           'confidence': current_confidence,
+           'distribution': regime_distribution,
+           'model': model,
+           'state_labels': state_labels
+       }
+
+
+4. KAMA INDICATOR CALCULATION LOGIC
+   ---------------------------------
+   
+   Complete Implementation:
+   
+   def calculate_kama(prices, n=10, fast=2, slow=30):
+       """
+       Kaufman Adaptive Moving Average (KAMA)
+       Adapts smoothing based on market efficiency.
+       
+       Parameters:
+       - prices: Series of closing prices
+       - n: Period for efficiency ratio (default: 10)
+       - fast: Fast EMA constant (default: 2)
+       - slow: Slow EMA constant (default: 30)
+       
+       Returns: Series with KAMA values
+       """
+       
+       import pandas as pd
+       import numpy as np
+       
+       # Step 1: Calculate Efficiency Ratio (ER)
+       # ----------------------------------------
+       # ER measures how efficiently price moves in one direction
+       
+       # Change = absolute price change over n periods
+       change = abs(prices - prices.shift(n))
+       
+       # Volatility = sum of absolute price changes over n periods
+       volatility = (prices - prices.shift(1)).abs().rolling(n).sum()
+       
+       # ER = Signal / Noise ratio
+       # High ER = trending market, Low ER = choppy market
+       er = change / volatility
+       
+       # Handle division by zero
+       er = er.replace([np.inf, -np.inf], 0).fillna(0)
+       
+       # Step 2: Calculate Smoothing Constant (SC)
+       # ------------------------------------------
+       # SC adapts between fast and slow based on ER
+       
+       # Fast and slow smoothing constants
+       fast_sc = 2 / (fast + 1)  # = 0.6667 for fast=2
+       slow_sc = 2 / (slow + 1)  # = 0.0645 for slow=30
+       
+       # Scaled smoothing constant
+       # When ER is high (trending), SC approaches fast_sc
+       # When ER is low (choppy), SC approaches slow_sc
+       sc = (er * (fast_sc - slow_sc) + slow_sc) ** 2
+       
+       # Step 3: Calculate KAMA
+       # ----------------------
+       # KAMA is like EMA but with adaptive smoothing
+       
+       kama = pd.Series(index=prices.index, dtype=float)
+       
+       # Initialize first KAMA value as first price
+       kama.iloc[n] = prices.iloc[n]
+       
+       # Iteratively calculate KAMA
+       for i in range(n + 1, len(prices)):
+           # KAMA[i] = KAMA[i-1] + SC[i] * (Price[i] - KAMA[i-1])
+           # This adapts faster in trending markets, slower in choppy markets
+           kama.iloc[i] = kama.iloc[i-1] + sc.iloc[i] * (prices.iloc[i] - kama.iloc[i-1])
+       
+       # Step 4: Generate Trading Signals
+       # ---------------------------------
+       current_price = prices.iloc[-1]
+       current_kama = kama.iloc[-1]
+       
+       # Distance percentage
+       distance_pct = ((current_price - current_kama) / current_kama) * 100
+       
+       # Signal generation with threshold
+       if distance_pct > 0.5:
+           signal = "BULLISH"
+       elif distance_pct < -0.5:
+           signal = "BEARISH"
+       else:
+           signal = "NEUTRAL"
+       
+       return {
+           'values': kama,
+           'current_value': float(current_kama),
+           'signal': signal,
+           'distance_pct': float(distance_pct),
+           'efficiency_ratio': float(er.iloc[-1])
+       }
+
+
+5. TECHNICAL INDICATORS CALCULATION LOGIC
+   ---------------------------------------
+   
+   Complete Implementations:
+   
+   A. RSI (Relative Strength Index)
+   ---------------------------------
+   
+   def calculate_rsi(prices, period=14):
+       """
+       RSI measures momentum by comparing magnitude of recent gains vs losses.
+       Range: 0-100
+       Overbought: > 70, Oversold: < 30
+       """
+       
+       # Calculate price changes
+       delta = prices.diff()
+       
+       # Separate gains and losses
+       gains = delta.where(delta > 0, 0)
+       losses = -delta.where(delta < 0, 0)
+       
+       # Calculate average gains and losses using Wilder's smoothing
+       avg_gains = gains.rolling(window=period).mean()
+       avg_losses = losses.rolling(window=period).mean()
+       
+       # Calculate Relative Strength (RS)
+       rs = avg_gains / avg_losses
+       
+       # Calculate RSI
+       # RSI = 100 - (100 / (1 + RS))
+       rsi = 100 - (100 / (1 + rs))
+       
+       # Signal interpretation
+       current_rsi = rsi.iloc[-1]
+       if current_rsi > 70:
+           signal = "Overbought"
+       elif current_rsi < 30:
+           signal = "Oversold"
+       else:
+           signal = "Neutral"
+       
+       return {
+           'values': rsi,
+           'current': float(current_rsi),
+           'signal': signal
+       }
+   
+   
+   B. MACD (Moving Average Convergence Divergence)
+   -----------------------------------------------
+   
+   def calculate_macd(prices, fast=12, slow=26, signal=9):
+       """
+       MACD shows relationship between two EMAs.
+       Crossovers indicate momentum changes.
+       """
+       
+       # Calculate EMAs
+       ema_fast = prices.ewm(span=fast, adjust=False).mean()
+       ema_slow = prices.ewm(span=slow, adjust=False).mean()
+       
+       # MACD Line = Fast EMA - Slow EMA
+       macd_line = ema_fast - ema_slow
+       
+       # Signal Line = 9-period EMA of MACD Line
+       signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+       
+       # Histogram = MACD Line - Signal Line
+       histogram = macd_line - signal_line
+       
+       # Current values
+       current_macd = macd_line.iloc[-1]
+       current_signal = signal_line.iloc[-1]
+       current_histogram = histogram.iloc[-1]
+       
+       # Signal interpretation
+       if current_macd > current_signal and current_histogram > 0:
+           signal_text = "Bullish (MACD above Signal)"
+       elif current_macd < current_signal and current_histogram < 0:
+           signal_text = "Bearish (MACD below Signal)"
+       else:
+           signal_text = "Neutral"
+       
+       return {
+           'macd_line': macd_line,
+           'signal_line': signal_line,
+           'histogram': histogram,
+           'current_macd': float(current_macd),
+           'current_signal': float(current_signal),
+           'current_histogram': float(current_histogram),
+           'signal': signal_text
+       }
+   
+   
+   C. Bollinger Bands
+   ------------------
+   
+   def calculate_bollinger_bands(prices, period=20, std_dev=2):
+       """
+       Bollinger Bands measure volatility and identify overbought/oversold.
+       Price touching upper band = potential overbought
+       Price touching lower band = potential oversold
+       """
+       
+       # Middle Band = Simple Moving Average
+       middle_band = prices.rolling(window=period).mean()
+       
+       # Calculate standard deviation
+       std = prices.rolling(window=period).std()
+       
+       # Upper Band = Middle + (std_dev × std)
+       upper_band = middle_band + (std_dev * std)
+       
+       # Lower Band = Middle - (std_dev × std)
+       lower_band = middle_band - (std_dev * std)
+       
+       # Calculate band width (measure of volatility)
+       band_width = ((upper_band - lower_band) / middle_band) * 100
+       
+       # Current values
+       current_price = prices.iloc[-1]
+       current_upper = upper_band.iloc[-1]
+       current_middle = middle_band.iloc[-1]
+       current_lower = lower_band.iloc[-1]
+       current_width = band_width.iloc[-1]
+       
+       # Signal interpretation
+       if current_price > current_upper:
+           signal = "Overbought (Above Upper Band)"
+       elif current_price < current_lower:
+           signal = "Oversold (Below Lower Band)"
+       elif current_width < 10:
+           signal = "Squeeze (Low Volatility)"
+       else:
+           signal = "Normal"
+       
+       return {
+           'upper_band': upper_band,
+           'middle_band': middle_band,
+           'lower_band': lower_band,
+           'band_width': band_width,
+           'current_upper': float(current_upper),
+           'current_middle': float(current_middle),
+           'current_lower': float(current_lower),
+           'signal': signal
+       }
+
+
+6. RISK METRICS CALCULATION LOGIC
+   --------------------------------
+   
+   Complete Implementations:
+   
+   A. Value at Risk (VaR)
+   ----------------------
+   
+   def calculate_var(prices, confidence_level=0.95):
+       """
+       VaR estimates maximum potential loss over a time period
+       at a given confidence level.
+       
+       Example: VaR_95 = -2.5% means:
+       "There's a 95% chance we won't lose more than 2.5% tomorrow"
+       """
+       
+       # Calculate daily returns
+       returns = prices.pct_change().dropna()
+       
+       # Method 1: Historical VaR (Quantile method)
+       # ------------------------------------------
+       # Simply take the percentile of historical returns
+       
+       if confidence_level == 0.95:
+           var_95 = returns.quantile(0.05)  # 5th percentile
+       elif confidence_level == 0.99:
+           var_99 = returns.quantile(0.01)  # 1st percentile
+       
+       # Method 2: Parametric VaR (Assumes normal distribution)
+       # -------------------------------------------------------
+       mean_return = returns.mean()
+       std_return = returns.std()
+       
+       # Z-scores for confidence levels
+       # 95% → Z = -1.645, 99% → Z = -2.326
+       from scipy.stats import norm
+       z_score_95 = norm.ppf(0.05)
+       z_score_99 = norm.ppf(0.01)
+       
+       var_95_parametric = mean_return + (z_score_95 * std_return)
+       var_99_parametric = mean_return + (z_score_99 * std_return)
+       
+       # Convert to percentage
+       var_95_pct = var_95 * 100
+       var_99_pct = var_99 * 100
+       
+       return {
+           'var_95': float(var_95_pct),
+           'var_99': float(var_99_pct),
+           'interpretation': f"95% confident won't lose more than {abs(var_95_pct):.2f}% tomorrow"
+       }
+   
+   
+   B. Sharpe Ratio
    ---------------
-   Kaufman Adaptive Moving Average
-   - Adjusts smoothing based on market efficiency
-   - Fast periods: 2, Slow periods: 30, Period: 10
    
-   Calculation:
-   1. Efficiency Ratio (ER) = |change| / sum(volatility)
-   2. Smoothing Constant (SC) = [ER × (fast_sc - slow_sc) + slow_sc]²
-   3. KAMA[i] = KAMA[i-1] + SC × (Price[i] - KAMA[i-1])
+   def calculate_sharpe_ratio(prices, risk_free_rate=0.02):
+       """
+       Sharpe Ratio measures risk-adjusted returns.
+       Higher is better (more return per unit of risk).
+       
+       Interpretation:
+       < 1.0: Poor
+       1.0-2.0: Good
+       2.0-3.0: Very Good
+       > 3.0: Excellent
+       """
+       
+       # Calculate daily returns
+       returns = prices.pct_change().dropna()
+       
+       # Annualize returns and volatility
+       # (252 trading days per year for crypto)
+       mean_return_annual = returns.mean() * 252
+       std_return_annual = returns.std() * np.sqrt(252)
+       
+       # Risk-free rate (typically treasury bonds)
+       # For crypto, often use 0% or stablecoin yield
+       
+       # Sharpe Ratio = (Return - Risk-Free Rate) / Volatility
+       sharpe = (mean_return_annual - risk_free_rate) / std_return_annual
+       
+       # Interpretation
+       if sharpe > 3:
+           interpretation = "Excellent risk-adjusted returns"
+       elif sharpe > 2:
+           interpretation = "Very good risk-adjusted returns"
+       elif sharpe > 1:
+           interpretation = "Good risk-adjusted returns"
+       elif sharpe > 0:
+           interpretation = "Poor risk-adjusted returns"
+       else:
+           interpretation = "Negative risk-adjusted returns"
+       
+       return {
+           'sharpe_ratio': float(sharpe),
+           'annual_return': float(mean_return_annual * 100),
+           'annual_volatility': float(std_return_annual * 100),
+           'interpretation': interpretation
+       }
    
-   Signal Generation:
-   - BULLISH: Price > KAMA and distance > 0.5%
-   - BEARISH: Price < KAMA and distance < -0.5%
-   - NEUTRAL: |distance| < 0.5%
-
-4. RISK METRICS
+   
+   C. Maximum Drawdown
+   -------------------
+   
+   def calculate_max_drawdown(prices):
+       """
+       Maximum Drawdown measures largest peak-to-trough decline.
+       Shows worst-case loss scenario.
+       
+       Example: -30% means at one point, price fell 30% from its peak.
+       """
+       
+       # Calculate cumulative returns
+       returns = prices.pct_change()
+       cumulative = (1 + returns).cumprod()
+       
+       # Calculate running maximum (peak)
+       running_max = cumulative.cummax()
+       
+       # Calculate drawdown at each point
+       # Drawdown = (Current - Peak) / Peak
+       drawdown = (cumulative - running_max) / running_max
+       
+       # Maximum drawdown (most negative value)
+       max_drawdown = drawdown.min()
+       
+       # Find date of maximum drawdown
+       max_dd_date = drawdown.idxmin()
+       
+       # Find peak date before max drawdown
+       peak_date = cumulative[:max_dd_date].idxmax()
+       
+       # Convert to percentage
+       max_dd_pct = max_drawdown * 100
+       
+       return {
+           'max_drawdown': float(max_dd_pct),
+           'peak_date': str(peak_date),
+           'trough_date': str(max_dd_date),
+           'drawdown_series': drawdown,
+           'interpretation': f"Worst decline was {abs(max_dd_pct):.2f}% from peak"
+       }
+   
+   
+   D. Volatility
    -------------
-   Value at Risk (VaR):
-   - VaR_95 = 5th percentile of returns
-   - VaR_99 = 1st percentile of returns
-   - Interpretation: Maximum expected loss with X% confidence
    
-   Sharpe Ratio:
-   - Formula: (Mean Return / Std Dev) × √252
-   - Interpretation: Risk-adjusted returns per unit of volatility
-   - Good: > 1, Excellent: > 2, Outstanding: > 3
-   
-   Maximum Drawdown:
-   - Formula: min((cumulative - running_max) / running_max)
-   - Interpretation: Worst peak-to-trough decline
-   
-   Volatility:
-   - Formula: Std Dev of returns × √252
-   - Interpretation: Annualized price fluctuation
+   def calculate_volatility(prices, window=20):
+       """
+       Volatility measures price fluctuation.
+       Higher volatility = higher risk and potential reward.
+       """
+       
+       # Calculate daily returns
+       returns = prices.pct_change().dropna()
+       
+       # Rolling volatility (standard deviation)
+       rolling_vol = returns.rolling(window=window).std()
+       
+       # Current volatility
+       current_vol = rolling_vol.iloc[-1]
+       
+       # Annualized volatility
+       annual_vol = current_vol * np.sqrt(252) * 100
+       
+       # Interpretation
+       if annual_vol > 100:
+           level = "Extreme"
+       elif annual_vol > 70:
+           level = "Very High"
+       elif annual_vol > 50:
+           level = "High"
+       elif annual_vol > 30:
+           level = "Moderate"
+       else:
+           level = "Low"
+       
+       return {
+           'daily_volatility': float(current_vol * 100),
+           'annual_volatility': float(annual_vol),
+           'level': level,
+           'rolling_volatility': rolling_vol
+       }
 
 
-UI/UX DESIGN SYSTEM:
+7. FRONTEND COMPONENT LOGIC
+   -------------------------
+   
+   A. Trading Signals Component
+   ----------------------------
+   
+   ```typescript
+   export function TradingSignals() {
+     // State management
+     const [signals, setSignals] = useState<SignalData | null>(null)
+     const [loading, setLoading] = useState(true)
+     const [error, setError] = useState<string | null>(null)
+     
+     // Fetch signals function
+     const fetchSignals = async () => {
+       try {
+         setLoading(true)
+         
+         // Call comprehensive signals endpoint
+         const response = await fetch(
+           'http://localhost:8000/api/v1/signals/comprehensive?symbol=BTCUSDT&interval=1h'
+         )
+         
+         if (!response.ok) {
+           throw new Error(`HTTP ${response.status}`)
+         }
+         
+         const data = await response.json()
+         setSignals(data)
+         setError(null)
+         
+       } catch (err) {
+         console.error('Error fetching signals:', err)
+         setError('Failed to fetch trading signals')
+       } finally {
+         setLoading(false)
+       }
+     }
+     
+     // Initial fetch + polling setup
+     useEffect(() => {
+       // Fetch immediately on mount
+       fetchSignals()
+       
+       // Set up polling (every 30 seconds)
+       const interval = setInterval(fetchSignals, 30000)
+       
+       // Cleanup on unmount
+       return () => clearInterval(interval)
+     }, [])
+     
+     // Loading state
+     if (loading && !signals) {
+       return <div>Loading trading signals...</div>
+     }
+     
+     // Error state
+     if (error) {
+       return <div>Error: {error}</div>
+     }
+     
+     // No data state
+     if (!signals) {
+       return <div>No signal data available</div>
+     }
+     
+     // Render signals
+     return (
+       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+         {/* Signal Card */}
+         <Card>
+           <Badge className={getRecommendationColor(signals.recommendation)}>
+             {signals.recommendation}
+           </Badge>
+           <div>Confidence: {signals.confidence}</div>
+           <div>Score: {signals.composite_score}</div>
+           <div>Price: ${signals.current_price.toLocaleString()}</div>
+         </Card>
+         
+         {/* Market Regime Card */}
+         <Card>
+           <Badge>{signals.regime.regime}</Badge>
+           <div>Probability: {(signals.regime.probability * 100).toFixed(1)}%</div>
+           <div>Confidence: {signals.regime.confidence}</div>
+         </Card>
+         
+         {/* KAMA Indicator Card */}
+         <Card>
+           <Badge>{signals.kama.signal}</Badge>
+           <div>KAMA Value: ${(signals.kama.value / 1000).toFixed(1)}K</div>
+           <div>Distance: {signals.kama.distance_pct > 0 ? '+' : ''}
+                {signals.kama.distance_pct.toFixed(2)}%</div>
+         </Card>
+         
+         {/* Signal Breakdown */}
+         <Card className="md:col-span-2 lg:col-span-4">
+           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+             {signals.factors.map((factor, idx) => (
+               <div key={idx}>
+                 <span>{factor.name}</span>
+                 <span>{factor.signal}</span>
+                 <Badge>{factor.weight > 0 ? '+' : ''}{factor.weight}</Badge>
+               </div>
+             ))}
+           </div>
+         </Card>
+       </div>
+     )
+   }
+   ```
+   
+   
+   B. Live Price Polling Logic
+   ---------------------------
+   
+   ```typescript
+   export function BitcoinOverview() {
+     const [livePrice, setLivePrice] = useState<number | null>(null)
+     const [priceChange, setPriceChange] = useState<number>(0)
+     
+     useEffect(() => {
+       const fetchLivePrice = async () => {
+         try {
+           // Fetch from Binance 24h ticker endpoint
+           const response = await fetch(
+             'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'
+           )
+           const data = await response.json()
+           
+           // Extract price and change
+           const price = parseFloat(data.lastPrice)
+           const change = parseFloat(data.priceChangePercent)
+           
+           setLivePrice(price)
+           setPriceChange(change)
+           
+         } catch (error) {
+           console.error('Error fetching live price:', error)
+           // Fallback to backend API if Binance fails
+         }
+       }
+       
+       // Initial fetch
+       fetchLivePrice()
+       
+       // Poll every 10 seconds
+       const interval = setInterval(fetchLivePrice, 10000)
+       
+       return () => clearInterval(interval)
+     }, [])
+     
+     return (
+       <div>
+         <h1>${livePrice?.toLocaleString()}</h1>
+         <span className={priceChange >= 0 ? 'text-green-500' : 'text-red-500'}>
+           {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}%
+         </span>
+       </div>
+     )
+   }
+   ```
+
+
+8. API ENDPOINT REQUEST FLOW
+   ---------------------------
+   
+   Example: /api/v1/signals/comprehensive
+   
+   Step-by-Step Execution:
+   
+   1. Request Receipt
+      ----------------
+      - FastAPI receives GET request
+      - Validates query parameters (symbol, interval)
+      - Extracts symbol from request
+   
+   2. Data Loading
+      ------------
+      - Check if data in cache: data_cache.get('BTCUSDT_1h')
+      - If cached: Use cached DataFrame (O(1) lookup)
+      - If not cached: Load from Parquet file, add to cache
+   
+   3. Live Price Fetching
+      -------------------
+      - Make HTTP request to Binance API
+      - URL: https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT
+      - Timeout: 5 seconds
+      - Parse JSON response, extract 'price' field
+      - Convert to float
+      - If API fails: Use last close price from Parquet
+   
+   4. Historical Data Filtering
+      -------------------------
+      - Filter last 90 days of data for regime classification
+      - Filter last 30 days for KAMA calculation
+      - Keep full dataset for fallback
+   
+   5. HMM Regime Classification
+      -------------------------
+      - Call train_and_classify_regimes(df_90d)
+      - Extract: regime, probability, confidence
+   
+   6. KAMA Calculation
+      ----------------
+      - Call calculate_kama(df_30d['close'])
+      - Extract: signal, value, distance_pct
+   
+   7. On-chain Metrics Fetching
+      -------------------------
+      - Call get_onchain_metrics() (with 5-min cache)
+      - Extract: funding_rate, open_interest, market_cap
+   
+   8. Composite Score Calculation
+      ---------------------------
+      - Call calculate_composite_score() with all factors
+      - Generate: recommendation, score, confidence, factors list
+   
+   9. Response Formatting
+      -------------------
+      - Build JSON response dictionary
+      - Add timestamp, current_price, regime, kama, factors
+      - Serialize to JSON
+   
+   10. Response Return
+       ---------------
+       - Return HTTP 200 with JSON body
+       - Add CORS headers (allow all origins in dev)
+       - Log response time
+
+
+9. ERROR HANDLING & FALLBACK LOGIC
+   --------------------------------
+   
+   A. Live Price Fallback
+   ----------------------
+   
+   try:
+       # Attempt Binance API
+       live_price = get_live_price(symbol)
+   except (RequestException, Timeout, JSONDecodeError):
+       # Fallback to last historical price
+       live_price = df.iloc[-1]['close']
+       logger.warning("Using fallback price from Parquet")
+   
+   if live_price is None:
+       # Double fallback
+       live_price = df.iloc[-1]['close']
+   
+   
+   B. On-chain Metrics Fallback
+   ----------------------------
+   
+   try:
+       onchain_data = get_onchain_metrics(symbol)
+   except Exception as e:
+       # Return neutral defaults if API fails
+       onchain_data = {
+           'funding_rate': 0.0,
+           'open_interest': 0.0,
+           'market_cap_billions': 1000.0  # Estimate
+       }
+       logger.error(f"On-chain API failed: {e}")
+   
+   
+   C. Frontend Error Handling
+   --------------------------
+   
+   try {
+       const response = await fetch(apiUrl)
+       if (!response.ok) {
+           throw new Error(`HTTP ${response.status}`)
+       }
+       const data = await response.json()
+       setSignals(data)
+   } catch (error) {
+       console.error('API Error:', error)
+       setError('Failed to fetch data')
+       // Keep showing last successful data
+       // Don't clear signals state
+   }
+
+
+10. CACHING STRATEGY
+    -----------------
+    
+    A. In-Memory Data Cache (Backend)
+    ---------------------------------
+    
+    # Global cache dictionary
+    data_cache = {}
+    
+    def load_data_with_cache(symbol: str, interval: str):
+        cache_key = f"{symbol}_{interval}"
+        
+        if cache_key in data_cache:
+            # Cache hit
+            return data_cache[cache_key]
+        else:
+            # Cache miss - load from disk
+            file_path = f"data/hot/{symbol}_{interval}.parquet"
+            df = pd.read_parquet(file_path)
+            
+            # Store in cache
+            data_cache[cache_key] = df
+            
+            return df
+    
+    # Cache persists for entire server lifetime
+    # Cleared only on server restart
+    
+    
+    B. API Response Caching (On-chain)
+    -----------------------------------
+    
+    from functools import lru_cache
+    from datetime import datetime, timedelta
+    
+    # Cache on-chain data for 5 minutes
+    onchain_cache = {}
+    cache_ttl = 300  # seconds
+    
+    def get_onchain_metrics(symbol: str):
+        current_time = datetime.now()
+        
+        if symbol in onchain_cache:
+            cached_data, cache_time = onchain_cache[symbol]
+            
+            # Check if cache is still valid
+            if (current_time - cache_time).seconds < cache_ttl:
+                return cached_data
+        
+        # Cache expired or missing - fetch fresh data
+        data = fetch_onchain_from_api(symbol)
+        onchain_cache[symbol] = (data, current_time)
+        
+        return data
+    
+    
+    C. Frontend State Caching
+    -------------------------
+    
+    // Keep last successful data in state
+    const [signals, setSignals] = useState<SignalData | null>(null)
+    
+    // On error, don't clear signals
+    // User sees last successful data until new fetch succeeds
+    
+    // Also use React Query for advanced caching:
+    const { data, isLoading, error } = useQuery({
+        queryKey: ['trading-signals'],
+        queryFn: fetchSignals,
+        refetchInterval: 30000,  // 30 seconds
+        staleTime: 20000,        // Data fresh for 20s
+        cacheTime: 3600000,      // Keep in cache for 1 hour
+        retry: 3,                // Retry failed requests 3 times
+    })
+
+
+KEY ALGORITHMS:
 ========================================
 
 COMPONENT HIERARCHY:
