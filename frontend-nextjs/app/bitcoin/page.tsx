@@ -1,65 +1,61 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import DashboardPageLayout from "@/components/dashboard/layout"
 import DashboardStat from "@/components/dashboard/stat"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import BitcoinIcon from "@/components/icons/bitcoin"
+import { TradingSignals } from "@/components/bitcoin/trading-signals"
 import ProcessorIcon from "@/components/icons/proccesor"
 import BoomIcon from "@/components/icons/boom"
 import AtomIcon from "@/components/icons/atom"
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ComposedChart,
-} from "recharts"
+import { ArrowRight, TrendingUp, BarChart3, Activity, AlertTriangle } from "lucide-react"
 
-// Mock data for charts
-const mockChartData = [
-  { date: "Jan 1", price: 42000, volume: 28.5, ma20: 41500, ma50: 41000, ma200: 40800 },
-  { date: "Jan 2", price: 42500, volume: 32.1, ma20: 41700, ma50: 41050, ma200: 40850 },
-  { date: "Jan 3", price: 43000, volume: 35.4, ma20: 42000, ma50: 41100, ma200: 40900 },
-  { date: "Jan 4", price: 44200, volume: 29.8, ma20: 42500, ma50: 41200, ma200: 40950 },
-  { date: "Jan 5", price: 44800, volume: 38.2, ma20: 43000, ma50: 41350, ma200: 41000 },
-  { date: "Jan 6", price: 45230, volume: 42.1, ma20: 43500, ma50: 41500, ma200: 41050 },
-  { date: "Jan 7", price: 45100, volume: 31.5, ma20: 43800, ma50: 41600, ma200: 41100 },
-]
 
-const volumeStats = [
-  { label: "24h Volume", value: "$28.5B" },
-  { label: "Volume Change", value: "+12.3%" },
-  { label: "Avg Volume", value: "$1.2M" },
-  { label: "Number of Trades", value: "2,450K" },
-]
 
-const priceStats = [
-  { label: "Current Price", value: "$45,230.50" },
-  { label: "24h High", value: "$46,100.00" },
-  { label: "24h Low", value: "$44,500.00" },
-  { label: "24h Change", value: "+$3,230.50 (+7.7%)" },
-]
 
-export default function BitcoinMarketOverview() {
-  const [dateRange, setDateRange] = useState("30D")
-  const [showVolume, setShowVolume] = useState(true)
 
-  const mockStats = [
+export default function BitcoinOverview() {
+  const router = useRouter()
+  const [livePrice, setLivePrice] = useState<number | null>(null)
+  const [priceChange24h, setPriceChange24h] = useState<number>(0)
+  const [high24h, setHigh24h] = useState<number | null>(null)
+  const [low24h, setLow24h] = useState<number | null>(null)
+  const [volume24h, setVolume24h] = useState<number | null>(null)
+
+  // Fetch live price from Binance API
+  useEffect(() => {
+    const fetchLivePrice = async () => {
+      try {
+        const response = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT')
+        const data = await response.json()
+        setLivePrice(parseFloat(data.lastPrice))
+        setPriceChange24h(parseFloat(data.priceChangePercent))
+        setHigh24h(parseFloat(data.highPrice))
+        setLow24h(parseFloat(data.lowPrice))
+        setVolume24h(parseFloat(data.volume))
+      } catch (error) {
+        console.error('Error fetching live price:', error)
+      }
+    }
+
+    fetchLivePrice()
+    const interval = setInterval(fetchLivePrice, 10000) // Update every 10 seconds
+
+    return () => clearInterval(interval)
+  }, [])
+
+  const quickStats = [
     {
       label: "Current Price",
-      value: "$45,230.50",
+      value: livePrice ? `$${livePrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Loading...",
       description: "BTC/USDT",
       icon: "bitcoin",
-      tag: "+7.7%",
-      intent: "positive" as const,
-      direction: "up" as const,
+      tag: livePrice ? `${priceChange24h >= 0 ? '+' : ''}${priceChange24h.toFixed(2)}%` : "...",
+      intent: (priceChange24h >= 0 ? "positive" : "negative") as const,
+      direction: (priceChange24h >= 0 ? "up" : "down") as const,
     },
     {
       label: "24h Volume",
@@ -97,16 +93,54 @@ export default function BitcoinMarketOverview() {
     atom: AtomIcon,
   }
 
+  // Quick navigation sections
+  const analysisPages = [
+    {
+      title: "Market Analysis",
+      description: "Detailed OHLC charts, moving averages, and volume analysis",
+      icon: BarChart3,
+      href: "/bitcoin/market",
+      color: "text-blue-500"
+    },
+    {
+      title: "Technical Indicators",
+      description: "RSI, MACD, Bollinger Bands, and advanced technical analysis",
+      icon: TrendingUp,
+      href: "/bitcoin/technical",
+      color: "text-green-500"
+    },
+    {
+      title: "Risk Metrics",
+      description: "VaR, CVaR, volatility analysis, and risk assessment",
+      icon: AlertTriangle,
+      href: "/bitcoin/risk",
+      color: "text-orange-500"
+    },
+    {
+      title: "Regime Classification",
+      description: "HMM-based market regime detection (Bull/Bear/Sideways)",
+      icon: Activity,
+      href: "/bitcoin/regime",
+      color: "text-purple-500"
+    }
+  ]
+
   return (
     <DashboardPageLayout
       header={{
-        title: "Market Overview",
-        description: "Real-time Bitcoin market data with interactive charts",
+        title: "Bitcoin Dashboard",
+        description: "Real-time trading signals and market intelligence",
         icon: BitcoinIcon,
       }}
     >
+      {/* Trading Signals Section */}
+      <div className="mb-6">
+        <TradingSignals />
+      </div>
+
+      {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-        {mockStats.map((stat, index) => (
+        {quickStats.map((stat, index) => (
           <DashboardStat
             key={index}
             label={stat.label}
@@ -120,239 +154,65 @@ export default function BitcoinMarketOverview() {
         ))}
       </div>
 
-      {/* Filters */}
-      <Card className="mb-6">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Filters</CardTitle>
-              <CardDescription>Loaded 7,234 candles from Jan 1 - Jan 7</CardDescription>
-            </div>
-            <div className="flex gap-2">
-              {["7D", "30D", "90D"].map((range) => (
-                <Button
-                  key={range}
-                  variant={dateRange === range ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setDateRange(range)}
-                  className="text-xs"
-                >
-                  {range}
-                </Button>
-              ))}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={showVolume}
-              onChange={(e) => setShowVolume(e.target.checked)}
-              className="rounded"
-            />
-            Show Volume
-          </label>
-        </CardContent>
-      </Card>
-
-      {/* Price Statistics */}
+      {/* Market Summary Card */}
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-lg">Price Statistics</CardTitle>
+          <CardTitle>Market Summary</CardTitle>
+          <CardDescription>24-hour Bitcoin market snapshot</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {priceStats.map((stat, index) => (
-              <div key={index} className="border border-border rounded-lg p-4">
-                <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-                <p className="text-base font-semibold">{stat.value}</p>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Candlestick Chart */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>OHLC Candlestick Chart</CardTitle>
-          <CardDescription>Price action with volume indicator</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={mockChartData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" />
-                <YAxis stroke="hsl(var(--muted-foreground))" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="price"
-                  stroke="#f7931a"
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                  yAxisId="left"
-                />
-                {showVolume && <Bar dataKey="volume" fill="#4facfe" opacity={0.3} yAxisId="right" />}
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Moving Averages */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Price with Moving Averages</CardTitle>
-          <CardDescription>20-day (orange), 50-day (green), 200-day (purple) moving averages</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4 mb-4">
-            <div className="p-3 bg-success/10 border border-success/20 rounded text-sm text-success">
-              Price above MA20 ($43,800) - Short-term bullish
+            <div className="p-4 border border-border rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Current Price</p>
+              <p className="text-lg font-semibold">
+                {livePrice ? `$${livePrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Loading..."}
+              </p>
             </div>
-            <div className="p-3 bg-success/10 border border-success/20 rounded text-sm text-success">
-              Price above MA50 ($41,600) - Mid-term bullish
+            <div className="p-4 border border-border rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">24h High</p>
+              <p className="text-lg font-semibold">
+                {high24h ? `$${high24h.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Loading..."}
+              </p>
+            </div>
+            <div className="p-4 border border-border rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">24h Low</p>
+              <p className="text-lg font-semibold">
+                {low24h ? `$${low24h.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Loading..."}
+              </p>
+            </div>
+            <div className="p-4 border border-border rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">24h Volume</p>
+              <p className="text-lg font-semibold">
+                {volume24h ? `${(volume24h / 1000).toFixed(1)}K BTC` : "Loading..."}
+              </p>
             </div>
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={mockChartData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" />
-                <YAxis stroke="hsl(var(--muted-foreground))" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
-                  }}
-                />
-                <Line type="monotone" dataKey="price" stroke="#f7931a" strokeWidth={2.5} dot={false} name="Price" />
-                <Line
-                  type="monotone"
-                  dataKey="ma20"
-                  stroke="#ff9500"
-                  strokeWidth={1.5}
-                  dot={false}
-                  name="MA20"
-                  strokeDasharray="5 5"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="ma50"
-                  stroke="#22c55e"
-                  strokeWidth={1.5}
-                  dot={false}
-                  name="MA50"
-                  strokeDasharray="5 5"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="ma200"
-                  stroke="#a855f7"
-                  strokeWidth={1.5}
-                  dot={false}
-                  name="MA200"
-                  strokeDasharray="5 5"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
         </CardContent>
       </Card>
 
-      {/* Volume Analysis */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Volume Analysis</CardTitle>
-          <CardDescription>Volume bars colored by comparison to 20-period MA</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4 mb-4">
-            <div className="p-3 bg-warning/10 border border-warning/20 rounded text-sm text-warning">
-              High volume: 42.1B average
-            </div>
-          </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={mockChartData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" />
-                <YAxis stroke="hsl(var(--muted-foreground))" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
-                  }}
-                />
-                <Bar dataKey="volume" fill="#4facfe" radius={[4, 4, 0, 0]} isAnimationActive={false} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
-            {volumeStats.map((stat, index) => (
-              <div key={index} className="border border-border rounded-lg p-4">
-                <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-                <p className="text-sm font-semibold">{stat.value}</p>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Statistical Summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Statistical Summary</CardTitle>
-          <CardDescription>Statistics for selected period: 7 days (Jan 1 - Jan 7)</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
-            <div>
-              <h4 className="text-sm font-semibold mb-3">Close Price Statistics</h4>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {[
-                  { label: "Mean", value: "$43,847.50" },
-                  { label: "Std Dev", value: "$1,123.45" },
-                  { label: "Min", value: "$42,000.00" },
-                  { label: "Max", value: "$45,230.50" },
-                  { label: "Median", value: "$44,200.00" },
-                ].map((stat, index) => (
-                  <div key={index} className="bg-muted p-3 rounded">
-                    <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-                    <p className="text-xs font-semibold">{stat.value}</p>
+      {/* Analysis Navigation */}
+      <div className="mb-6">
+        <h2 className="text-xl font-semibold mb-4">Detailed Analysis</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {analysisPages.map((page, index) => (
+            <Card key={index} className="cursor-pointer hover:bg-accent transition-colors" onClick={() => router.push(page.href)}>
+              <CardContent className="p-6">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <page.icon className={`h-5 w-5 ${page.color}`} />
+                      <h3 className="font-semibold">{page.title}</h3>
+                    </div>
+                    <p className="text-sm text-muted-foreground">{page.description}</p>
                   </div>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold mb-3">Volume Statistics</h4>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {[
-                  { label: "Mean", value: "34.23B" },
-                  { label: "Std Dev", value: "5.12B" },
-                  { label: "Min", value: "28.50B" },
-                  { label: "Max", value: "42.10B" },
-                  { label: "Median", value: "32.80B" },
-                ].map((stat, index) => (
-                  <div key={index} className="bg-muted p-3 rounded">
-                    <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-                    <p className="text-xs font-semibold">{stat.value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+                  <ArrowRight className="h-5 w-5 text-muted-foreground ml-4" />
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+
     </DashboardPageLayout>
   )
 }

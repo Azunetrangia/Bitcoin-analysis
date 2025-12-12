@@ -4,6 +4,7 @@ import type { Metadata } from "next"
 import { useState, useEffect } from "react"
 import DashboardPageLayout from "@/components/dashboard/layout"
 import DashboardStat from "@/components/dashboard/stat"
+import { Breadcrumb } from "@/components/dashboard/breadcrumb"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -411,6 +412,9 @@ export default function BitcoinMarketOverview() {
         icon: BitcoinIcon,
       }}
     >
+      {/* Breadcrumb Navigation */}
+      <Breadcrumb items={[{ label: "Market Overview" }]} />
+
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         {mockStats.map((stat, index) => (

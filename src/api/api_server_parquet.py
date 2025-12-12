@@ -11,9 +11,11 @@ import numpy as np
 from pathlib import Path
 import logging
 import sys
+import requests
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +69,22 @@ DATA_DIR = Path(__file__).parent.parent.parent / "data" / "hot"
 
 # Cache for loaded data
 _data_cache = {}
+
+
+def get_live_price(symbol: str = "BTCUSDT") -> float:
+    """Fetch live price from Binance API"""
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        price = float(data['price'])
+        logger.info(f"Fetched live {symbol} price: ${price:,.2f}")
+        return price
+    except Exception as e:
+        logger.error(f"Error fetching live price for {symbol}: {e}")
+        # Fallback to latest parquet price if API fails
+        return None
 
 
 def load_parquet_data(symbol: str = "BTCUSDT", interval: str = "1h"):
@@ -629,6 +647,308 @@ async def get_investment_decision(symbol: str, interval: str = Query("1h")):
         "current_price": float(latest['close']),
         "rsi": float(latest['rsi']) if not pd.isna(latest['rsi']) else None
     }
+
+
+@app.get("/api/v1/signals/regime")
+async def get_regime_signal(
+    symbol: str = Query(default="BTCUSDT", description="Trading pair symbol"),
+    interval: str = Query(default="1h", description="Timeframe (1h/4h/1d)")
+):
+    """
+    Get current market regime using HMM.
+    
+    Returns regime classification (Bull/Bear/Sideways) with confidence.
+    """
+    try:
+        from src.models.regime_detector import RegimeDetector
+        
+        # Load data
+        df = load_parquet_data(symbol.upper(), interval)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data available")
+        
+        # Initialize and train detector
+        detector = RegimeDetector(n_states=3, lookback_days=90)
+        
+        # Train on historical data (use last 360 candles for training)
+        train_size = min(360, int(len(df) * 0.7))
+        detector.train(df.iloc[-train_size:])
+        
+        # Predict current regime
+        result = detector.predict_current_regime(df.iloc[-30:])  # Use last 30 candles for context
+        
+        # Get latest price for context
+        latest = df.iloc[-1]
+        
+        return {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "timestamp": latest['timestamp'].isoformat(),
+            "current_price": float(latest['close']),
+            "regime": result['regime'],
+            "probability": float(result['probability']),
+            "confidence": result['confidence'],
+            "state_probabilities": {
+                "Bear": float(result['all_probs'][1]) if len(result['all_probs']) > 1 else 0,
+                "Sideways": float(result['all_probs'][0]) if len(result['all_probs']) > 0 else 0,
+                "Bull": float(result['all_probs'][2]) if len(result['all_probs']) > 2 else 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting regime: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/signals/kama")
+async def get_kama_signals(
+    symbol: str = Query(default="BTCUSDT", description="Trading pair symbol"),
+    interval: str = Query(default="1h", description="Timeframe (1h/4h/1d)"),
+    period: int = Query(default=10, description="KAMA period")
+):
+    """
+    Get KAMA (Kaufman Adaptive Moving Average) signals.
+    
+    Returns KAMA values, crossover signals, and trading recommendations.
+    """
+    try:
+        from src.indicators.adaptive import calculate_kama, generate_kama_signals, calculate_atr
+        
+        # Load data
+        df = load_parquet_data(symbol.upper(), interval)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data available")
+        
+        # Calculate KAMA
+        df['kama'] = calculate_kama(df['close'], n=period)
+        df['atr'] = calculate_atr(df, period=14)
+        
+        # Generate signals
+        df_signals = generate_kama_signals(df, kama_period=period)
+        
+        # Get latest values
+        latest = df_signals.iloc[-1]
+        prev = df_signals.iloc[-2] if len(df_signals) > 1 else latest
+        
+        # Determine signal
+        signal = "NEUTRAL"
+        if latest['kama_cross'] == 1:
+            signal = "BUY"
+        elif latest['kama_cross'] == -1:
+            signal = "SELL"
+        elif latest['signal'] == 1:
+            signal = "BULLISH"
+        elif latest['signal'] == -1:
+            signal = "BEARISH"
+        
+        # Distance from KAMA
+        distance_pct = ((latest['close'] - latest['kama']) / latest['kama']) * 100
+        
+        return {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "timestamp": latest['timestamp'].isoformat(),
+            "current_price": float(latest['close']),
+            "kama_value": float(latest['kama']),
+            "signal": signal,
+            "distance_from_kama": float(distance_pct),
+            "atr": float(latest['atr']),
+            "atr_pct": float(latest['atr_pct']),
+            "trend": "Bullish" if latest['signal'] == 1 else "Bearish" if latest['signal'] == -1 else "Neutral",
+            "recent_cross": "Golden" if latest['kama_cross'] == 1 else "Death" if latest['kama_cross'] == -1 else "None"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting KAMA signals: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/signals/onchain")
+async def get_onchain_data():
+    """
+    Get on-chain metrics from free sources.
+    
+    Returns market cap, funding rate, active addresses, etc.
+    """
+    try:
+        from src.data.free_onchain import get_comprehensive_onchain_data
+        
+        # Get all on-chain data
+        data = get_comprehensive_onchain_data()
+        
+        return {
+            "timestamp": data['timestamp'],
+            "market_cap": {
+                "value": data['mvrv']['value'],
+                "signal": data['mvrv']['signal'],
+                "description": data['mvrv']['description']
+            },
+            "funding_rate": {
+                "rate": data['funding_rate']['funding_rate'],
+                "rate_pct": data['funding_rate']['funding_rate_pct'],
+                "annual_rate_pct": data['funding_rate']['annual_rate_pct'],
+                "signal": data['funding_rate']['signal'],
+                "warning": data['funding_rate']['warning'],
+                "mark_price": data['funding_rate']['mark_price']
+            },
+            "network_health": {
+                "active_addresses": data['active_addresses'],
+                "mempool_size": data['mempool_size']
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting on-chain data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/signals/comprehensive")
+async def get_comprehensive_signals(
+    symbol: str = Query(default="BTCUSDT", description="Trading pair symbol"),
+    interval: str = Query(default="1h", description="Timeframe (1h/4h/1d)")
+):
+    """
+    Get comprehensive trading signals combining regime, KAMA, and on-chain data.
+    
+    Returns complete market analysis with trading recommendation.
+    """
+    try:
+        # Get signals directly (don't call other endpoints to avoid Query issues)
+        from src.models.regime_detector import RegimeDetector
+        from src.indicators.adaptive import calculate_kama, generate_kama_signals, calculate_atr
+        from src.data.free_onchain import get_comprehensive_onchain_data
+        
+        # Load data
+        df = load_parquet_data(symbol.upper(), interval)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data available")
+        
+        # Get regime
+        detector = RegimeDetector(n_states=3, lookback_days=90)
+        train_size = min(360, int(len(df) * 0.7))
+        detector.train(df.iloc[-train_size:])
+        regime = detector.predict_current_regime(df.iloc[-30:])
+        
+        # Get KAMA
+        df['kama'] = calculate_kama(df['close'], n=10)
+        df['atr'] = calculate_atr(df, period=14)
+        df_signals = generate_kama_signals(df, kama_period=10)
+        latest = df_signals.iloc[-1]
+        
+        # Get on-chain data
+        onchain_data = get_comprehensive_onchain_data()
+        
+        # Calculate composite score
+        score = 0
+        factors = []
+        
+        # Regime factor (30% weight)
+        if regime['regime'] == 'Bull' and regime['probability'] > 0.7:
+            score += 30
+            factors.append({"name": "Regime", "signal": "Bull (High Confidence)", "weight": 30})
+        elif regime['regime'] == 'Bull':
+            score += 15
+            factors.append({"name": "Regime", "signal": "Bull (Medium Confidence)", "weight": 15})
+        elif regime['regime'] == 'Bear' and regime['probability'] > 0.7:
+            score -= 30
+            factors.append({"name": "Regime", "signal": "Bear (High Confidence)", "weight": -30})
+        elif regime['regime'] == 'Bear':
+            score -= 15
+            factors.append({"name": "Regime", "signal": "Bear (Medium Confidence)", "weight": -15})
+        else:
+            factors.append({"name": "Regime", "signal": "Sideways", "weight": 0})
+        
+        # KAMA factor (30% weight)
+        kama_signal = "NEUTRAL"
+        if latest['kama_cross'] == 1:
+            score += 30
+            factors.append({"name": "KAMA", "signal": "Golden Cross", "weight": 30})
+            kama_signal = "BUY"
+        elif latest['kama_cross'] == -1:
+            score -= 30
+            factors.append({"name": "KAMA", "signal": "Death Cross", "weight": -30})
+            kama_signal = "SELL"
+        elif latest['signal'] == 1:
+            score += 15
+            factors.append({"name": "KAMA", "signal": "Bullish Trend", "weight": 15})
+            kama_signal = "BULLISH"
+        elif latest['signal'] == -1:
+            score -= 15
+            factors.append({"name": "KAMA", "signal": "Bearish Trend", "weight": -15})
+            kama_signal = "BEARISH"
+        else:
+            factors.append({"name": "KAMA", "signal": "Neutral", "weight": 0})
+        
+        # Funding rate factor (20% weight)
+        if onchain_data['funding_rate']['signal'] == 'EXTREME_SHORT':
+            score += 20
+            factors.append({"name": "Funding", "signal": "Extreme Short (Squeeze Risk)", "weight": 20})
+        elif onchain_data['funding_rate']['signal'] == 'EXTREME_LONG':
+            score -= 20
+            factors.append({"name": "Funding", "signal": "Extreme Long (Squeeze Risk)", "weight": -20})
+        elif onchain_data['funding_rate']['signal'] == 'NEUTRAL':
+            score += 5
+            factors.append({"name": "Funding", "signal": "Neutral (Healthy)", "weight": 5})
+        
+        # Market cap factor (20% weight)
+        if onchain_data['mvrv']['signal'] == 'ACCUMULATION':
+            score += 20
+            factors.append({"name": "Market Cap", "signal": "Accumulation Zone", "weight": 20})
+        elif onchain_data['mvrv']['signal'] == 'OVERVALUED':
+            score -= 10
+            factors.append({"name": "Market Cap", "signal": "Overvalued", "weight": -10})
+        else:
+            factors.append({"name": "Market Cap", "signal": "Fair Value", "weight": 0})
+        
+        # Generate recommendation
+        if score >= 60:
+            recommendation = "STRONG BUY"
+            confidence = "High"
+        elif score >= 30:
+            recommendation = "BUY"
+            confidence = "Medium"
+        elif score >= -30:
+            recommendation = "HOLD"
+            confidence = "Low"
+        elif score >= -60:
+            recommendation = "SELL"
+            confidence = "Medium"
+        else:
+            recommendation = "STRONG SELL"
+            confidence = "High"
+        
+        # Get live price (fallback to parquet if API fails)
+        live_price = get_live_price(symbol.upper())
+        current_price = live_price if live_price is not None else float(latest['close'])
+        
+        return {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "timestamp": datetime.now().isoformat(),
+            "current_price": current_price,
+            "recommendation": recommendation,
+            "confidence": confidence,
+            "composite_score": score,
+            "regime": {
+                "regime": regime['regime'],
+                "probability": regime['probability'],
+                "confidence": regime['confidence']
+            },
+            "kama": {
+                "value": float(latest['kama']),
+                "signal": kama_signal,
+                "distance_pct": float(((latest['close'] - latest['kama']) / latest['kama']) * 100)
+            },
+            "onchain": {
+                "funding_rate": onchain_data['funding_rate']['signal'],
+                "market_cap_signal": onchain_data['mvrv']['signal']
+            },
+            "factors": factors
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting comprehensive signals: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

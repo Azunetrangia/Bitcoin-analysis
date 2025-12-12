@@ -3,6 +3,7 @@
 import type { Metadata } from "next"
 import { useState, useEffect } from "react"
 import DashboardPageLayout from "@/components/dashboard/layout"
+import { Breadcrumb } from "@/components/dashboard/breadcrumb"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -145,6 +146,8 @@ export default function RiskAnalysis() {
         icon: RiskIcon,
       }}
     >
+      <Breadcrumb items={[{ label: "Risk Analysis" }]} />
+      
       {/* Filters */}
       <Card className="mb-4">
         <CardHeader className="pb-3">
