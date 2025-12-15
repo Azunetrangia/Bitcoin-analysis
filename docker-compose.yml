@@ -1,0 +1,64 @@
+version: '3.9'
+
+services:
+  # Backend - FastAPI
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: bitcoin-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount data directory for persistence
+      - ./data:/app/data
+      # Mount logs directory
+      - ./logs:/app/logs
+      # Development: mount source code for hot reload (see override file)
+      # - ./src:/app/src
+    environment:
+      - PYTHONPATH=/app
+      - DATA_HOT_PATH=/app/data/hot
+      - DATA_RAW_PATH=/app/data/raw
+      - DATA_PROCESSED_PATH=/app/data/processed
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/summary/BTCUSDT"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - bitcoin-network
+
+  # Frontend - Next.js
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    container_name: bitcoin-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000/api/v1
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - bitcoin-network
+
+# Named volumes (optional - currently using bind mounts)
+volumes:
+  bitcoin-data:
+    driver: local
+  bitcoin-logs:
+    driver: local
+
+# Custom network
+networks:
+  bitcoin-network:
+    name: bitcoin-platform
+    driver: bridge

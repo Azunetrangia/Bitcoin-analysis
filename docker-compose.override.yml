@@ -1,0 +1,28 @@
+# Docker Compose override for development
+# This file is automatically loaded with docker-compose.yml in dev
+version: '3.9'
+
+services:
+  backend:
+    # Override command for development with hot reload
+    command: uvicorn src.api.api_server_parquet:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src
+    environment:
+      - LOG_LEVEL=debug
+
+  frontend:
+    # Use development server instead of production
+    command: npm run dev
+    build:
+      context: .
+      dockerfile: frontend.dev.Dockerfile
+    volumes:
+      # Mount source for hot reload
+      - ./frontend-nextjs:/app
+      # Exclude node_modules (use container's version)
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development

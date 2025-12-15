@@ -123,12 +123,38 @@ async def root():
 
 
 @app.get("/health")
+@app.get("/api/v1/health")
 async def health():
-    return {
-        "status": "healthy",
-        "database": "parquet-files",
-        "timestamp": datetime.now()
-    }
+    """Health check endpoint for Docker and monitoring"""
+    try:
+        # Check if data files exist
+        data_files = list(DATA_DIR.glob("BTCUSDT_*.parquet"))
+        data_status = len(data_files) > 0
+        
+        # Get latest data timestamp if available
+        latest_timestamp = None
+        if data_files:
+            try:
+                df = pd.read_parquet(data_files[0])
+                if 'time' in df.columns:
+                    latest_timestamp = df['time'].max()
+            except:
+                pass
+        
+        return {
+            "status": "healthy" if data_status else "degraded",
+            "database": "parquet-files",
+            "timestamp": datetime.now().isoformat(),
+            "data_files": len(data_files),
+            "latest_data": latest_timestamp.isoformat() if latest_timestamp else None
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 @app.post("/api/v1/refresh-data")

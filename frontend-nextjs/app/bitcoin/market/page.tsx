@@ -89,11 +89,19 @@ export default function BitcoinMarketOverview() {
       try {
         const response = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT')
         const data = await response.json()
-        setLivePrice(parseFloat(data.lastPrice))
-        setLivePriceChange24h(parseFloat(data.priceChangePercent))
-        setLiveHigh24h(parseFloat(data.highPrice))
-        setLiveLow24h(parseFloat(data.lowPrice))
-        setLiveVolume24h(parseFloat(data.quoteVolume)) // Volume in USDT
+        
+        const price = parseFloat(data.lastPrice)
+        const change = parseFloat(data.priceChangePercent)
+        const high = parseFloat(data.highPrice)
+        const low = parseFloat(data.lowPrice)
+        const volume = parseFloat(data.quoteVolume)
+        
+        // Only update if values are valid numbers
+        if (!isNaN(price)) setLivePrice(price)
+        if (!isNaN(change)) setLivePriceChange24h(change)
+        if (!isNaN(high)) setLiveHigh24h(high)
+        if (!isNaN(low)) setLiveLow24h(low)
+        if (!isNaN(volume)) setLiveVolume24h(volume)
       } catch (error) {
         console.error('Error fetching live price:', error)
       }
@@ -322,7 +330,7 @@ export default function BitcoinMarketOverview() {
             : `$${marketStats.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           description: "BTC/USDT",
           icon: "bitcoin",
-          tag: livePrice 
+          tag: livePrice && !isNaN(livePriceChange24h)
             ? `${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(1)}%`
             : `${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%`,
           intent: ((livePrice ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "positive" : "negative") as const,
@@ -357,7 +365,7 @@ export default function BitcoinMarketOverview() {
             ? `Low: $${liveLow24h.toLocaleString()}`
             : `Low: $${marketStats.low24h.toLocaleString()}`,
           icon: "atom",
-          tag: liveHigh24h && liveLow24h
+          tag: liveHigh24h && liveLow24h && !isNaN(liveHigh24h) && !isNaN(liveLow24h)
             ? `Range ${((liveHigh24h - liveLow24h) / liveLow24h * 100).toFixed(1)}%`
             : `Range ${((marketStats.high24h - marketStats.low24h) / marketStats.low24h * 100).toFixed(1)}%`,
           intent: "neutral" as const,
@@ -392,10 +400,10 @@ export default function BitcoinMarketOverview() {
           },
           {
             label: "24h Change",
-            value: livePrice 
+            value: livePrice && !isNaN(livePriceChange24h)
               ? `${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`
               : `${marketStats.change24h >= 0 ? "+" : ""}$${Math.abs(marketStats.change24h).toLocaleString(undefined, { minimumFractionDigits: 2 })} (${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%)`,
-            color: (livePrice ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "text-green-500" : "text-red-500"
+            color: (livePrice && !isNaN(livePriceChange24h) ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "text-green-500" : "text-red-500"
           },
         ]
       : []
