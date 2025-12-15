@@ -24,6 +24,9 @@ export default function BitcoinOverview() {
   const [high24h, setHigh24h] = useState<number | null>(null)
   const [low24h, setLow24h] = useState<number | null>(null)
   const [volume24h, setVolume24h] = useState<number | null>(null)
+  const [volumeUSDT, setVolumeUSDT] = useState<number | null>(null)
+  const [volatility, setVolatility] = useState<number | null>(null)
+  const [sharpeRatio, setSharpeRatio] = useState<number | null>(null)
 
   // Fetch live price from Binance API
   useEffect(() => {
@@ -36,6 +39,25 @@ export default function BitcoinOverview() {
         setHigh24h(parseFloat(data.highPrice))
         setLow24h(parseFloat(data.lowPrice))
         setVolume24h(parseFloat(data.volume))
+        setVolumeUSDT(parseFloat(data.quoteVolume))
+        
+        // Calculate volatility from 24h price range
+        const high = parseFloat(data.highPrice)
+        const low = parseFloat(data.lowPrice)
+        const avgPrice = (high + low) / 2
+        const range = high - low
+        // Annualized volatility estimate: (range / avgPrice) * sqrt(365)
+        const dailyVol = (range / avgPrice) * 100
+        const annualizedVol = dailyVol * Math.sqrt(365)
+        setVolatility(annualizedVol)
+        
+        // Calculate simple Sharpe Ratio
+        // Sharpe = (Return - RiskFreeRate) / Volatility
+        // Assuming risk-free rate ≈ 0 for crypto
+        const dailyReturn = parseFloat(data.priceChangePercent)
+        const annualizedReturn = dailyReturn * 365
+        const sharpe = dailyVol > 0 ? annualizedReturn / annualizedVol : 0
+        setSharpeRatio(sharpe)
       } catch (error) {
         console.error('Error fetching live price:', error)
       }
@@ -59,30 +81,30 @@ export default function BitcoinOverview() {
     },
     {
       label: "24h Volume",
-      value: "$28.5B",
+      value: volumeUSDT ? `$${(volumeUSDT / 1e9).toFixed(1)}B` : "Loading...",
       description: "Trading volume",
       icon: "proccesor",
-      tag: "+12.3%",
+      tag: volumeUSDT && volume24h ? `${volume24h.toLocaleString(undefined, { maximumFractionDigits: 0 })} BTC` : "...",
       intent: "positive" as const,
       direction: "up" as const,
     },
     {
       label: "Volatility",
-      value: "18.5%",
+      value: volatility ? `${volatility.toFixed(1)}%` : "Loading...",
       description: "Daily annualized",
       icon: "boom",
-      tag: "Elevated",
-      intent: "negative" as const,
+      tag: volatility ? (volatility > 50 ? "Elevated" : volatility > 30 ? "Normal" : "Low") : "...",
+      intent: (volatility && volatility > 50 ? "negative" : "positive") as const,
       direction: "up" as const,
     },
     {
       label: "Sharpe Ratio",
-      value: "1.24",
+      value: sharpeRatio !== null ? sharpeRatio.toFixed(2) : "Loading...",
       description: "24-hour window",
       icon: "atom",
-      tag: "Good",
-      intent: "positive" as const,
-      direction: "up" as const,
+      tag: sharpeRatio !== null ? (sharpeRatio > 1 ? "Good" : sharpeRatio > 0 ? "Fair" : "Poor") : "...",
+      intent: (sharpeRatio !== null && sharpeRatio > 1 ? "positive" : "neutral") as const,
+      direction: (sharpeRatio !== null && sharpeRatio > 0 ? "up" : "down") as const,
     },
   ]
 

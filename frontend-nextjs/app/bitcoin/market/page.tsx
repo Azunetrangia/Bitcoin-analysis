@@ -63,6 +63,11 @@ export default function BitcoinMarketOverview() {
   const [error, setError] = useState<string | null>(null)
   const [chartData, setChartData] = useState<ChartData[]>([])
   const [marketStats, setMarketStats] = useState<any>(null)
+  const [livePrice, setLivePrice] = useState<number | null>(null)
+  const [livePriceChange24h, setLivePriceChange24h] = useState<number>(0)
+  const [liveHigh24h, setLiveHigh24h] = useState<number | null>(null)
+  const [liveLow24h, setLiveLow24h] = useState<number | null>(null)
+  const [liveVolume24h, setLiveVolume24h] = useState<number | null>(null)
 
   // Calculate MAs
   const calculateMovingAverage = (data: ChartData[], period: number): number[] => {
@@ -77,6 +82,28 @@ export default function BitcoinMarketOverview() {
     }
     return mas
   }
+
+  // Fetch live price from Binance API
+  useEffect(() => {
+    const fetchLivePrice = async () => {
+      try {
+        const response = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT')
+        const data = await response.json()
+        setLivePrice(parseFloat(data.lastPrice))
+        setLivePriceChange24h(parseFloat(data.priceChangePercent))
+        setLiveHigh24h(parseFloat(data.highPrice))
+        setLiveLow24h(parseFloat(data.lowPrice))
+        setLiveVolume24h(parseFloat(data.quoteVolume)) // Volume in USDT
+      } catch (error) {
+        console.error('Error fetching live price:', error)
+      }
+    }
+
+    fetchLivePrice()
+    const interval = setInterval(fetchLivePrice, 10000) // Update every 10 seconds
+
+    return () => clearInterval(interval)
+  }, [])
 
   // Fetch data
   useEffect(() => {
@@ -285,21 +312,27 @@ export default function BitcoinMarketOverview() {
 
   const stats = calculateStats()
 
-  // Mock stats for display
+  // Mock stats for display - USE LIVE PRICE if available
   const mockStats = marketStats
     ? [
         {
           label: "Current Price",
-          value: `$${marketStats.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          value: livePrice 
+            ? `$${livePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : `$${marketStats.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           description: "BTC/USDT",
           icon: "bitcoin",
-          tag: `${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%`,
-          intent: (marketStats.changePercent24h >= 0 ? "positive" : "negative") as const,
-          direction: (marketStats.changePercent24h >= 0 ? "up" : "down") as const,
+          tag: livePrice 
+            ? `${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(1)}%`
+            : `${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%`,
+          intent: ((livePrice ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "positive" : "negative") as const,
+          direction: ((livePrice ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "up" : "down") as const,
         },
         {
           label: "24h Volume",
-          value: `$${(marketStats.volume24h / 1e9).toFixed(1)}B`,
+          value: liveVolume24h 
+            ? `$${(liveVolume24h / 1e9).toFixed(1)}B`
+            : `$${(marketStats.volume24h / 1e9).toFixed(1)}B`,
           description: "Trading volume",
           icon: "proccesor",
           tag: "+12.3%",
@@ -317,10 +350,16 @@ export default function BitcoinMarketOverview() {
         },
         {
           label: "24h High/Low",
-          value: `$${marketStats.high24h.toLocaleString()}`,
-          description: `Low: $${marketStats.low24h.toLocaleString()}`,
+          value: liveHigh24h 
+            ? `$${liveHigh24h.toLocaleString()}`
+            : `$${marketStats.high24h.toLocaleString()}`,
+          description: liveLow24h 
+            ? `Low: $${liveLow24h.toLocaleString()}`
+            : `Low: $${marketStats.low24h.toLocaleString()}`,
           icon: "atom",
-          tag: `Range ${((marketStats.high24h - marketStats.low24h) / marketStats.low24h * 100).toFixed(1)}%`,
+          tag: liveHigh24h && liveLow24h
+            ? `Range ${((liveHigh24h - liveLow24h) / liveLow24h * 100).toFixed(1)}%`
+            : `Range ${((marketStats.high24h - marketStats.low24h) / marketStats.low24h * 100).toFixed(1)}%`,
           intent: "neutral" as const,
           direction: "up" as const,
         },
@@ -330,13 +369,33 @@ export default function BitcoinMarketOverview() {
   const priceStats =
     chartData.length > 0 && marketStats
       ? [
-          { label: "Current Price", value: `$${marketStats.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, color: "text-foreground" },
-          { label: "24h High", value: `$${marketStats.high24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, color: "text-green-500" },
-          { label: "24h Low", value: `$${marketStats.low24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, color: "text-red-500" },
+          { 
+            label: "Current Price", 
+            value: livePrice 
+              ? `$${livePrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}` 
+              : `$${marketStats.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 
+            color: "text-foreground" 
+          },
+          { 
+            label: "24h High", 
+            value: liveHigh24h 
+              ? `$${liveHigh24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}` 
+              : `$${marketStats.high24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 
+            color: "text-green-500" 
+          },
+          { 
+            label: "24h Low", 
+            value: liveLow24h 
+              ? `$${liveLow24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}` 
+              : `$${marketStats.low24h.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 
+            color: "text-red-500" 
+          },
           {
             label: "24h Change",
-            value: `${marketStats.change24h >= 0 ? "+" : ""}$${Math.abs(marketStats.change24h).toLocaleString(undefined, { minimumFractionDigits: 2 })} (${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%)`,
-            color: marketStats.changePercent24h >= 0 ? "text-green-500" : "text-red-500"
+            value: livePrice 
+              ? `${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`
+              : `${marketStats.change24h >= 0 ? "+" : ""}$${Math.abs(marketStats.change24h).toLocaleString(undefined, { minimumFractionDigits: 2 })} (${marketStats.changePercent24h >= 0 ? "+" : ""}${marketStats.changePercent24h.toFixed(1)}%)`,
+            color: (livePrice ? livePriceChange24h : marketStats.changePercent24h) >= 0 ? "text-green-500" : "text-red-500"
           },
         ]
       : []
@@ -344,7 +403,12 @@ export default function BitcoinMarketOverview() {
   const volumeStats =
     chartData.length > 0 && marketStats
       ? [
-          { label: "24h Volume", value: `$${(marketStats.volume24h / 1e9).toFixed(1)}B` },
+          { 
+            label: "24h Volume", 
+            value: liveVolume24h 
+              ? `$${(liveVolume24h / 1e9).toFixed(1)}B` 
+              : `$${(marketStats.volume24h / 1e9).toFixed(1)}B` 
+          },
           { label: "Volume Change", value: "+12.3%" },
           {
             label: "Avg Volume",
