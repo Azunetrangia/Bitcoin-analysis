@@ -1,0 +1,27 @@
+# Git Attributes - Language Detection
+
+# Documentation files
+*.md linguist-documentation
+docs/** linguist-documentation
+
+# Test files
+tests/** linguist-vendored
+*_test.py linguist-vendored
+test_*.py linguist-vendored
+
+# Config files
+*.json linguist-detectable=false
+*.toml linguist-detectable=false
+*.yaml linguist-detectable=false
+*.yml linguist-detectable=false
+
+# Parquet data files (don't show in diff)
+*.parquet binary
+*.parquet diff=binary
+
+# Notebooks
+*.ipynb linguist-documentation
+
+# Lock files
+package-lock.json linguist-generated=true
+poetry.lock linguist-generated=true
